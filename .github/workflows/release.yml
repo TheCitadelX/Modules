@@ -1,0 +1,64 @@
+name: Build Modules Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.2.3)"
+        required: true
+        type: string
+      name:
+        description: "Release name (optional)"
+        required: false
+        type: string
+      prerelease:
+        description: "Mark as pre-release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build module archives
+        run: |
+          chmod +x tools/build-modules.sh
+          bash tools/build-modules.sh
+
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          {
+            echo "Changes"
+            echo
+            if [ -n "$LAST_TAG" ]; then
+              git log --pretty=format:"- %s (%h)" "$LAST_TAG"..HEAD
+            else
+              git log --pretty=format:"- %s (%h)" -n 50
+            fi
+          } > release_notes.md
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.name || inputs.tag }}
+          body_path: release_notes.md
+          prerelease: ${{ inputs.prerelease }}
+          files: |
+            tools/*.zip
