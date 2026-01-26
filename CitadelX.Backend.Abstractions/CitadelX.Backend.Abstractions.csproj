@@ -3,8 +3,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AssemblyName>CitadelX.Backend.Abstractions</AssemblyName>
+    <RootNamespace>CitadelX.Backend</RootNamespace>
   </PropertyGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\CitadelX.Backend.Abstractions\CitadelX.Backend.Abstractions.csproj" />
-  </ItemGroup>
 </Project>

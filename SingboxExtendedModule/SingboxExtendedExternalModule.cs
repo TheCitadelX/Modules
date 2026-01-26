@@ -1,6 +1,5 @@
 using CitadelX.Backend.Cores;
 using CitadelX.Backend.Options;
-using Microsoft.Extensions.Options;
 
 namespace CitadelX.SingboxExtendedModule;
 
@@ -8,9 +7,9 @@ public sealed class SingboxExtendedExternalModule : ICoreModule
 {
     private readonly CoreRepoOptions _repos;
 
-    public SingboxExtendedExternalModule(IOptions<CoreRepoOptions> repos)
+    public SingboxExtendedExternalModule(CoreRepoOptions repos)
     {
-        _repos = repos.Value;
+        _repos = repos;
     }
 
     public string Id => "SingboxExtended";

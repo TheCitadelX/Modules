@@ -5,8 +5,6 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\CitadelX.Backend\CitadelX.Backend.csproj">
-      <Private>false</Private>
-    </ProjectReference>
+    <ProjectReference Include="..\CitadelX.Backend.Abstractions\CitadelX.Backend.Abstractions.csproj" />
   </ItemGroup>
 </Project>
