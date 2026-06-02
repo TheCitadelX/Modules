@@ -3,7 +3,7 @@ using CitadelX.Modules.Abstractions;
 using CitadelX.Node.Abstractions;
 using Microsoft.Extensions.Logging;
 
-namespace CitadelX.SingboxNodeModule;
+namespace CitadelX.SingboxExtendedNodeModule;
 
 public sealed class SingboxNodeServer : INodeServer
 {

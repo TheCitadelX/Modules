@@ -8,7 +8,16 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\CitadelX.Node.Abstractions\CitadelX.Node.Abstractions.csproj" />
-    <ProjectReference Include="..\SingboxNodeModule\SingboxNodeModule.csproj" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
   </ItemGroup>
+
+  <!-- Deliver this node module as a plugin: drop only its own DLL into the shared modules folder.
+       Shared contract assemblies are resolved from the host context, so they are not copied (D3). -->
+  <Target Name="CopyToDropFolder" AfterTargets="Build">
+    <PropertyGroup>
+      <DropFolder>$(MSBuildThisFileDirectory)..\..\Drop\modules</DropFolder>
+    </PropertyGroup>
+    <MakeDir Directories="$(DropFolder)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(DropFolder)" SkipUnchangedFiles="false" />
+  </Target>
 </Project>

@@ -8,6 +8,7 @@ public sealed class UserEntity
     public long Traffic { get; init; }
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
     public DateTime? LastSeenAt { get; init; }
+    public string? ResourceAllocationJson { get; init; }
 }
 
 public sealed class ServerLaunchProfile
@@ -19,6 +20,7 @@ public sealed class ServerLaunchProfile
     public bool? UseRunCommand { get; set; }
     public string? WorkingDirectory { get; set; }
     public string? ConfigPath { get; set; }
+    public string? LogPath { get; set; }
     public bool ShouldBeRunning { get; set; }
     public DateTimeOffset? UpdatedAt { get; set; }
 }

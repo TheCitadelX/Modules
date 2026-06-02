@@ -6,4 +6,7 @@
     <AssemblyName>CitadelX.Backend.Abstractions</AssemblyName>
     <RootNamespace>CitadelX.Backend</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CitadelX.Modules.Abstractions\CitadelX.Modules.Abstractions.csproj" />
+  </ItemGroup>
 </Project>

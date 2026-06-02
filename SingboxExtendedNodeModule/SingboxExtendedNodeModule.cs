@@ -1,5 +1,4 @@
 using CitadelX.Node.Abstractions;
-using CitadelX.SingboxNodeModule;
 using Microsoft.Extensions.Logging;
 
 namespace CitadelX.SingboxExtendedNodeModule;

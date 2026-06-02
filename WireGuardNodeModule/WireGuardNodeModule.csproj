@@ -3,16 +3,14 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>CitadelX.SingboxNodeModule</AssemblyName>
-    <RootNamespace>CitadelX.SingboxNodeModule</RootNamespace>
+    <AssemblyName>CitadelX.WireGuardNodeModule</AssemblyName>
+    <RootNamespace>CitadelX.WireGuardNodeModule</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\CitadelX.Node.Abstractions\CitadelX.Node.Abstractions.csproj" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
   </ItemGroup>
 
-  <!-- Deliver this node module as a plugin: drop only its own DLL into the shared modules folder.
-       Shared contract assemblies are resolved from the host context, so they are not copied (D3). -->
   <Target Name="CopyToDropFolder" AfterTargets="Build">
     <PropertyGroup>
       <DropFolder>$(MSBuildThisFileDirectory)..\..\Drop\modules</DropFolder>

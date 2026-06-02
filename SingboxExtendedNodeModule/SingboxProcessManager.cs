@@ -2,7 +2,7 @@ using System.Diagnostics;
 using CitadelX.Modules.Abstractions;
 using CitadelX.Node.Abstractions;
 
-namespace CitadelX.SingboxNodeModule;
+namespace CitadelX.SingboxExtendedNodeModule;
 
 public sealed class SingboxProcessManager
 {

@@ -1,3 +1,5 @@
+using CitadelX.Modules.Abstractions;
+
 namespace CitadelX.Node.Abstractions;
 
 public interface IServer
@@ -5,7 +7,13 @@ public interface IServer
     Task Start();
     Task Stop();
     Task Restart();
-    Task Reconfigure(string serverConfigJsonOrPath);
+
+    /// <summary>
+    /// Materialize and apply a config artifact produced by the backend module.
+    /// The node owns where/how the artifact lands (file, API operations, ...);
+    /// node-local placeholders are resolved here at apply time.
+    /// </summary>
+    Task Apply(ConfigArtifact artifact);
 }
 
 public interface IManagedServer
@@ -22,6 +30,19 @@ public interface INodeServer : IServer, IManagedServer
 {
     bool IsRunning { get; }
     void ApplyProfile(ServerLaunchProfile profile);
+
+    Task<ServerLogChunk> ReadLogsAsync(ServerLogQuery query)
+        => Task.FromResult(new ServerLogChunk());
+
+    ServerRuntimeState GetRuntimeState()
+        => new()
+        {
+            IsRunning = IsRunning,
+            Health = IsRunning ? ServerRuntimeHealth.Running : ServerRuntimeHealth.Stopped
+        };
+
+    IReadOnlyList<ServerUserRuntimeSnapshot> GetUserRuntimeSnapshots()
+        => Array.Empty<ServerUserRuntimeSnapshot>();
 }
 
 public interface INodeCoreModule

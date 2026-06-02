@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CitadelX.Node.Abstractions;
 
-namespace CitadelX.SingboxNodeModule;
+namespace CitadelX.SingboxExtendedNodeModule;
 
 public sealed class SingboxConfigPatcher
 {

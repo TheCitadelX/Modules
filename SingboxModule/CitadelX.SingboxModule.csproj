@@ -7,4 +7,15 @@
   <ItemGroup>
     <ProjectReference Include="..\CitadelX.Backend.Abstractions\CitadelX.Backend.Abstractions.csproj" />
   </ItemGroup>
+
+  <!-- Deliver this module as a plugin: drop only its own DLL into the shared modules folder.
+       Shared contract assemblies (Backend.Abstractions, Modules.Abstractions) are deliberately
+       NOT copied so the plugin loader resolves them from the already-loaded host context (D2/D3). -->
+  <Target Name="CopyToDropFolder" AfterTargets="Build">
+    <PropertyGroup>
+      <DropFolder>$(MSBuildThisFileDirectory)..\..\Drop\modules</DropFolder>
+    </PropertyGroup>
+    <MakeDir Directories="$(DropFolder)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(DropFolder)" SkipUnchangedFiles="false" />
+  </Target>
 </Project>
