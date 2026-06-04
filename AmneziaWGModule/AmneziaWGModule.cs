@@ -12,6 +12,7 @@ namespace CitadelX.AmneziaWGModule;
 public sealed class AmneziaWGModule : ICoreModule
 {
     private const string ServerPrivateKeyToken = "${node.secret.wireguardPrivateKey}";
+    private const string ProtocolVersionMarker = "# CitadelX-AmneziaWGProtocolVersion =";
 
     public string Id => "AmneziaWG";
     public string Label => "AmneziaWG";
@@ -249,13 +250,15 @@ public sealed class AmneziaWGModule : ICoreModule
 
     private static string BuildAmneziaWGConfig(JsonObject input)
     {
+        var protocolVersion = ResolveProtocolVersion(input);
         var sb = new StringBuilder();
         sb.AppendLine("[Interface]");
+        sb.AppendLine($"{ProtocolVersionMarker} {protocolVersion}");
         sb.AppendLine($"PrivateKey = {ServerPrivateKeyToken}");
         AddLine(sb, "Address", GetString(input, "interfaceAddress") ?? "10.78.0.1/24");
         AddLine(sb, "ListenPort", GetString(input, "listenPort") ?? "51820");
         AddLine(sb, "MTU", GetString(input, "mtu"));
-        AddAmneziaInterfaceLines(sb, input);
+        AddAmneziaServerInterfaceLines(sb, input, protocolVersion);
         AddLine(sb, "Table", GetString(input, "table"));
         AddLine(sb, "PostUp", GetString(input, "postUp"));
         AddLine(sb, "PostDown", GetString(input, "postDown"));
@@ -356,6 +359,7 @@ public sealed class AmneziaWGModule : ICoreModule
 
     private static void AddAmneziaQueryValues(List<string> query, JsonObject credentials, string config)
     {
+        var protocolVersion = ResolveProtocolVersion(config);
         var amneziaValues = new (string ShortKey, string LongKey, string ConfigKey, string[] CredentialKeys)[]
         {
             ("jc", "junk_packet_count", "Jc", new[] { "jc", "junk_packet_count", "junkPacketCount" }),
@@ -379,6 +383,11 @@ public sealed class AmneziaWGModule : ICoreModule
         var startIndex = query.Count;
         foreach (var mapping in amneziaValues)
         {
+            if (!IsFieldSupportedByProtocol(mapping.ConfigKey, protocolVersion))
+            {
+                continue;
+            }
+
             var value = FirstNonEmpty(FirstString(credentials, mapping.CredentialKeys), ResolveConfigValue(config, mapping.ConfigKey));
             if (string.IsNullOrWhiteSpace(value))
             {
@@ -395,28 +404,35 @@ public sealed class AmneziaWGModule : ICoreModule
         query.Insert(startIndex, "enable_amnezia=true");
     }
 
-    private static void AddAmneziaInterfaceLines(StringBuilder sb, JsonObject input)
+    private static void AddAmneziaServerInterfaceLines(StringBuilder sb, JsonObject input, string protocolVersion)
     {
         AddLine(sb, "Jc", GetString(input, "jc") ?? "4");
         AddLine(sb, "Jmin", GetString(input, "jmin") ?? "40");
         AddLine(sb, "Jmax", GetString(input, "jmax") ?? "70");
         AddLine(sb, "S1", GetString(input, "s1") ?? "80");
         AddLine(sb, "S2", GetString(input, "s2") ?? "120");
-        AddLine(sb, "S3", GetString(input, "s3"));
-        AddLine(sb, "S4", GetString(input, "s4"));
+        if (IsProtocol20(protocolVersion))
+        {
+            AddLine(sb, "S3", GetString(input, "s3"));
+            AddLine(sb, "S4", GetString(input, "s4"));
+        }
         AddLine(sb, "H1", GetString(input, "h1") ?? "1");
         AddLine(sb, "H2", GetString(input, "h2") ?? "2");
         AddLine(sb, "H3", GetString(input, "h3") ?? "3");
         AddLine(sb, "H4", GetString(input, "h4") ?? "4");
-        AddLine(sb, "I1", GetString(input, "i1"));
-        AddLine(sb, "I2", GetString(input, "i2"));
-        AddLine(sb, "I3", GetString(input, "i3"));
-        AddLine(sb, "I4", GetString(input, "i4"));
-        AddLine(sb, "I5", GetString(input, "i5"));
+        if (IsProtocol15OrNewer(protocolVersion))
+        {
+            AddLine(sb, "I1", GetString(input, "i1"));
+            AddLine(sb, "I2", GetString(input, "i2"));
+            AddLine(sb, "I3", GetString(input, "i3"));
+            AddLine(sb, "I4", GetString(input, "i4"));
+            AddLine(sb, "I5", GetString(input, "i5"));
+        }
     }
 
     private static void AddAmneziaInterfaceLines(StringBuilder sb, JsonObject credentials, string config)
     {
+        var protocolVersion = ResolveProtocolVersion(config);
         var mappings = new (string Key, string[] CredentialKeys)[]
         {
             ("Jc", new[] { "jc", "junk_packet_count", "junkPacketCount" }),
@@ -439,8 +455,93 @@ public sealed class AmneziaWGModule : ICoreModule
 
         foreach (var mapping in mappings)
         {
+            if (!IsFieldSupportedByProtocol(mapping.Key, protocolVersion))
+            {
+                continue;
+            }
+
             AddLine(sb, mapping.Key, FirstNonEmpty(FirstString(credentials, mapping.CredentialKeys), ResolveConfigValue(config, mapping.Key)));
         }
+    }
+
+    private static string ResolveProtocolVersion(JsonObject input)
+        => NormalizeProtocolVersion(GetString(input, "protocolVersion")) ?? "2.0";
+
+    private static string ResolveProtocolVersion(string config)
+    {
+        foreach (var line in ReadLines(config))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith(ProtocolVersionMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                return NormalizeProtocolVersion(trimmed[ProtocolVersionMarker.Length..].Trim()) ?? "2.0";
+            }
+        }
+
+        // Legacy configs predate the marker. Infer the smallest version that can represent the fields.
+        if (!string.IsNullOrWhiteSpace(ResolveConfigValue(config, "S3"))
+            || !string.IsNullOrWhiteSpace(ResolveConfigValue(config, "S4"))
+            || HasHeaderRange(config))
+        {
+            return "2.0";
+        }
+
+        if (new[] { "I1", "I2", "I3", "I4", "I5" }.Any(key => !string.IsNullOrWhiteSpace(ResolveConfigValue(config, key))))
+        {
+            return "1.5";
+        }
+
+        return "1.0";
+    }
+
+    private static string? NormalizeProtocolVersion(string? value)
+        => value?.Trim() switch
+        {
+            "1" or "1.0" => "1.0",
+            "1.5" => "1.5",
+            "2" or "2.0" => "2.0",
+            _ => null
+        };
+
+    private static bool IsFieldSupportedByProtocol(string key, string protocolVersion)
+    {
+        if (string.Equals(key, "S3", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(key, "S4", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsProtocol20(protocolVersion);
+        }
+
+        if (string.Equals(key, "I1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(key, "I2", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(key, "I3", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(key, "I4", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(key, "I5", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsProtocol15OrNewer(protocolVersion);
+        }
+
+        return true;
+    }
+
+    private static bool IsProtocol15OrNewer(string protocolVersion)
+        => string.Equals(protocolVersion, "1.5", StringComparison.OrdinalIgnoreCase)
+           || IsProtocol20(protocolVersion);
+
+    private static bool IsProtocol20(string protocolVersion)
+        => string.Equals(protocolVersion, "2.0", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasHeaderRange(string config)
+    {
+        foreach (var key in new[] { "H1", "H2", "H3", "H4" })
+        {
+            var value = ResolveConfigValue(config, key);
+            if (!string.IsNullOrWhiteSpace(value) && value.Contains('-', StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string? ResolveEndpoint(SubscriptionRequest request)

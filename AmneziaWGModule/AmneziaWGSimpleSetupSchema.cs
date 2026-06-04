@@ -20,6 +20,11 @@ public static class AmneziaWGSimpleSetupSchema
             { "key": "interfaceName", "label": "Interface", "type": "text", "required": true },
             { "key": "interfaceAddress", "label": "Address", "type": "text", "required": true },
             { "key": "listenPort", "label": "Listen port", "type": "number", "valueType": "number", "min": 1, "required": true },
+            { "key": "protocolVersion", "label": "Protocol", "type": "select", "required": true, "options": [
+              { "value": "2.0", "label": "AmneziaWG 2.0" },
+              { "value": "1.5", "label": "AmneziaWG 1.5" },
+              { "value": "1.0", "label": "AmneziaWG 1.0" }
+            ], "help": "Controls which obfuscation fields are emitted into server/client configs." },
             { "key": "serverPublicKey", "label": "Server public key", "type": "text", "placeholder": "Optional until generated" },
             { "key": "dns", "label": "Client DNS", "type": "text", "placeholder": "1.1.1.1, 8.8.8.8" },
             { "key": "mtu", "label": "MTU", "type": "number", "valueType": "number", "min": 576 }
@@ -42,17 +47,17 @@ public static class AmneziaWGSimpleSetupSchema
             { "key": "jmax", "label": "Jmax", "type": "number", "valueType": "number", "min": 0 },
             { "key": "s1", "label": "S1", "type": "number", "valueType": "number", "min": 0 },
             { "key": "s2", "label": "S2", "type": "number", "valueType": "number", "min": 0 },
-            { "key": "s3", "label": "S3", "type": "number", "valueType": "number", "min": 0 },
-            { "key": "s4", "label": "S4", "type": "number", "valueType": "number", "min": 0 },
+            { "key": "s3", "label": "S3", "type": "number", "valueType": "number", "min": 0, "visibleWhen": { "field": "protocolVersion", "equals": "2.0" } },
+            { "key": "s4", "label": "S4", "type": "number", "valueType": "number", "min": 0, "visibleWhen": { "field": "protocolVersion", "equals": "2.0" } },
             { "key": "h1", "label": "H1", "type": "text", "placeholder": "1234 or 123-456" },
             { "key": "h2", "label": "H2", "type": "text", "placeholder": "1234 or 123-456" },
             { "key": "h3", "label": "H3", "type": "text", "placeholder": "1234 or 123-456" },
             { "key": "h4", "label": "H4", "type": "text", "placeholder": "1234 or 123-456" },
-            { "key": "i1", "label": "I1", "type": "text", "placeholder": "<r 16>" },
-            { "key": "i2", "label": "I2", "type": "text", "placeholder": "<b 0x1234>" },
-            { "key": "i3", "label": "I3", "type": "text" },
-            { "key": "i4", "label": "I4", "type": "text" },
-            { "key": "i5", "label": "I5", "type": "text" }
+            { "key": "i1", "label": "I1", "type": "text", "placeholder": "<r 16>", "visibleWhen": { "field": "protocolVersion", "in": ["1.5", "2.0"] } },
+            { "key": "i2", "label": "I2", "type": "text", "placeholder": "<b 0x1234>", "visibleWhen": { "field": "protocolVersion", "in": ["1.5", "2.0"] } },
+            { "key": "i3", "label": "I3", "type": "text", "visibleWhen": { "field": "protocolVersion", "in": ["1.5", "2.0"] } },
+            { "key": "i4", "label": "I4", "type": "text", "visibleWhen": { "field": "protocolVersion", "in": ["1.5", "2.0"] } },
+            { "key": "i5", "label": "I5", "type": "text", "visibleWhen": { "field": "protocolVersion", "in": ["1.5", "2.0"] } }
           ]
         },
         {
@@ -73,6 +78,7 @@ public static class AmneziaWGSimpleSetupSchema
       "interfaceName": "awg0",
       "interfaceAddress": "10.78.0.1/24",
       "listenPort": 51820,
+      "protocolVersion": "2.0",
       "serverPublicKey": "",
       "dns": "1.1.1.1",
       "mtu": 1420,
@@ -81,8 +87,8 @@ public static class AmneziaWGSimpleSetupSchema
       "jmax": 70,
       "s1": 80,
       "s2": 120,
-      "s3": "",
-      "s4": "",
+      "s3": 80,
+      "s4": 120,
       "h1": "1",
       "h2": "2",
       "h3": "3",

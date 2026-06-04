@@ -86,7 +86,10 @@
 > `FileArtifact` default filename `awg0.conf`. The node module writes configs under `data/amneziawg`,
 > controls `awg-quick up/down`, probes/telemeters with `awg show`, patches peers by `# CitadelX-UserId`,
 > and uses the shared node-local `wireguard-private-key` generator because AmneziaWG keys are WireGuard
-> X25519 keys. On clean Debian/Ubuntu based nodes, the generic system-package installer runs the module's
+> X25519 keys. Guided setup and subscriptions are protocol-version gated: `1.0` emits `Jc/Jmin/Jmax`,
+> `S1/S2`, and `H1-H4`; `1.5` adds `I1-I5`; `2.0` adds `S3/S4` and allows `H1-H4` ranges. The generated
+> native config carries `# CitadelX-AmneziaWGProtocolVersion = ...` so full/file subscriptions and URI
+> query values can omit unsupported fields for the selected protocol. On clean Debian/Ubuntu based nodes, the generic system-package installer runs the module's
 > apt pre-install step to enable the Amnezia repository before installing `amneziawg`; on dnf based systems
 > it enables the AmneziaWG COPR and installs the split `amneziawg-dkms`/`amneziawg-tools` packages.
 >
