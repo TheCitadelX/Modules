@@ -7,19 +7,19 @@ using CitadelX.Modules.Abstractions;
 using CitadelX.Node.Abstractions;
 using Microsoft.Extensions.Logging;
 
-namespace CitadelX.WireGuardNodeModule;
+namespace CitadelX.AmneziaWGNodeModule;
 
-public sealed class WireGuardNodeServer : INodeServer
+public sealed class AmneziaWGNodeServer : INodeServer
 {
     private readonly AtomicFileWriter _fileWriter;
-    private readonly ILogger<WireGuardNodeServer> _logger;
+    private readonly ILogger<AmneziaWGNodeServer> _logger;
     private ServerLaunchProfile _profile;
     private RollingServerLog _log;
     private DateTimeOffset? _startedAt;
     private string? _lastStatusMessage;
     private ServerRuntimeHealth _health = ServerRuntimeHealth.Unknown;
 
-    public WireGuardNodeServer(ServerLaunchProfile profile, AtomicFileWriter fileWriter, ILogger<WireGuardNodeServer> logger)
+    public AmneziaWGNodeServer(ServerLaunchProfile profile, AtomicFileWriter fileWriter, ILogger<AmneziaWGNodeServer> logger)
     {
         _profile = profile;
         _fileWriter = fileWriter;
@@ -59,7 +59,7 @@ public sealed class WireGuardNodeServer : INodeServer
             return Array.Empty<ServerUserRuntimeSnapshot>();
         }
 
-        var peers = WireGuardConfigDocument.Load(configPath).GetUserIdsByPublicKey();
+        var peers = AmneziaWGConfigDocument.Load(configPath).GetUserIdsByPublicKey();
         if (peers.Count == 0)
         {
             return Array.Empty<ServerUserRuntimeSnapshot>();
@@ -72,10 +72,10 @@ public sealed class WireGuardNodeServer : INodeServer
 
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
-            return BuildUnavailableSnapshots(peers.Values, now, "WireGuard telemetry is available on Linux nodes only.");
+            return BuildUnavailableSnapshots(peers.Values, now, "AmneziaWG telemetry is available on Linux nodes only.");
         }
 
-        var result = RunAsync("wg", new[] { "show", ResolveInterfaceName(), "dump" }, log: false).GetAwaiter().GetResult();
+        var result = RunAsync("awg", new[] { "show", ResolveInterfaceName(), "dump" }, log: false).GetAwaiter().GetResult();
         if (result.ExitCode != 0)
         {
             return BuildUnavailableSnapshots(peers.Values, now, result.Summary);
@@ -90,7 +90,7 @@ public sealed class WireGuardNodeServer : INodeServer
         var configPath = GetConfigPath();
         if (!File.Exists(configPath))
         {
-            throw new FileNotFoundException("WireGuard config file does not exist.", configPath);
+            throw new FileNotFoundException("AmneziaWG config file does not exist.", configPath);
         }
 
         TryRestrictConfigPermissions(configPath);
@@ -101,18 +101,18 @@ public sealed class WireGuardNodeServer : INodeServer
             return;
         }
 
-        var result = await RunAsync("wg-quick", new[] { "up", configPath });
+        var result = await RunAsync("awg-quick", new[] { "up", configPath });
         if (result.ExitCode != 0)
         {
             _health = ServerRuntimeHealth.Failed;
             _lastStatusMessage = result.Summary;
-            throw new InvalidOperationException($"wg-quick up failed: {result.Summary}");
+            throw new InvalidOperationException($"awg-quick up failed: {result.Summary}");
         }
 
         _startedAt = DateTimeOffset.UtcNow;
         _health = ServerRuntimeHealth.Running;
         _lastStatusMessage = null;
-        _logger.LogInformation("WireGuard interface started from {ConfigPath}.", configPath);
+        _logger.LogInformation("AmneziaWG interface started from {ConfigPath}.", configPath);
     }
 
     public async Task Stop()
@@ -125,18 +125,18 @@ public sealed class WireGuardNodeServer : INodeServer
             return;
         }
 
-        var result = await RunAsync("wg-quick", new[] { "down", GetConfigPath() });
+        var result = await RunAsync("awg-quick", new[] { "down", GetConfigPath() });
         if (result.ExitCode != 0)
         {
             _health = ServerRuntimeHealth.Failed;
             _lastStatusMessage = result.Summary;
-            throw new InvalidOperationException($"wg-quick down failed: {result.Summary}");
+            throw new InvalidOperationException($"awg-quick down failed: {result.Summary}");
         }
 
         _startedAt = null;
         _health = ServerRuntimeHealth.Stopped;
         _lastStatusMessage = null;
-        _logger.LogInformation("WireGuard interface stopped.");
+        _logger.LogInformation("AmneziaWG interface stopped.");
     }
 
     public async Task Restart()
@@ -153,12 +153,12 @@ public sealed class WireGuardNodeServer : INodeServer
     {
         if (artifact is not FileArtifact file)
         {
-            throw new NotSupportedException($"WireGuard supports file artifacts only; received '{artifact.GetType().Name}'.");
+            throw new NotSupportedException($"AmneziaWG supports file artifacts only; received '{artifact.GetType().Name}'.");
         }
 
         if (string.IsNullOrWhiteSpace(file.Content))
         {
-            throw new ArgumentException("WireGuard config content is empty.", nameof(artifact));
+            throw new ArgumentException("AmneziaWG config content is empty.", nameof(artifact));
         }
 
         var configPath = GetConfigPath(file.FileName);
@@ -178,7 +178,7 @@ public sealed class WireGuardNodeServer : INodeServer
 
     public async Task AddUser(UserEntity user, JsonObject? userTemplate = null)
     {
-        var peer = WireGuardPeer.From(user, userTemplate);
+        var peer = AmneziaWGPeer.From(user, userTemplate);
         PatchConfig(config => config.UpsertPeer(peer));
         _log.Append("system", $"peer added: {user.Id}");
         await RestartIfRunning();
@@ -186,7 +186,7 @@ public sealed class WireGuardNodeServer : INodeServer
 
     public async Task EditUser(UserEntity user, JsonObject? userTemplate = null)
     {
-        var peer = WireGuardPeer.From(user, userTemplate);
+        var peer = AmneziaWGPeer.From(user, userTemplate);
         PatchConfig(config => config.UpsertPeer(peer));
         _log.Append("system", $"peer edited: {user.Id}");
         await RestartIfRunning();
@@ -203,7 +203,7 @@ public sealed class WireGuardNodeServer : INodeServer
         => RemoveUser(userId);
 
     public Task EnableUser(string userId)
-        => throw new InvalidOperationException("WireGuard user.enable requires a userTemplate; send user.add instead.");
+        => throw new InvalidOperationException("AmneziaWG user.enable requires a userTemplate; send user.add instead.");
 
     public async Task SyncUsers(IReadOnlyCollection<string> allowedUserIds)
     {
@@ -213,10 +213,10 @@ public sealed class WireGuardNodeServer : INodeServer
         await RestartIfRunning();
     }
 
-    private void PatchConfig(Action<WireGuardConfigDocument> patch)
+    private void PatchConfig(Action<AmneziaWGConfigDocument> patch)
     {
         var configPath = GetConfigPath();
-        var document = WireGuardConfigDocument.Load(configPath);
+        var document = AmneziaWGConfigDocument.Load(configPath);
         patch(document);
         _fileWriter.WriteAllTextAtomic(configPath, document.Serialize());
         TryRestrictConfigPermissions(configPath);
@@ -235,13 +235,13 @@ public sealed class WireGuardNodeServer : INodeServer
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             _health = ServerRuntimeHealth.Stopped;
-            _lastStatusMessage = "WireGuard wg-quick runtime is Linux-only.";
+            _lastStatusMessage = "AmneziaWG awg-quick runtime is Linux-only.";
             return false;
         }
 
         try
         {
-            var result = RunAsync("wg", new[] { "show", ResolveInterfaceName() }, log: false).GetAwaiter().GetResult();
+            var result = RunAsync("awg", new[] { "show", ResolveInterfaceName() }, log: false).GetAwaiter().GetResult();
             if (result.ExitCode == 0)
             {
                 _health = ServerRuntimeHealth.Running;
@@ -321,7 +321,7 @@ public sealed class WireGuardNodeServer : INodeServer
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
-            throw new PlatformNotSupportedException("WireGuard wg-quick runtime is supported on Linux nodes only.");
+            throw new PlatformNotSupportedException("AmneziaWG awg-quick runtime is supported on Linux nodes only.");
         }
     }
 
@@ -330,7 +330,7 @@ public sealed class WireGuardNodeServer : INodeServer
         if (!string.IsNullOrWhiteSpace(artifactFileName))
         {
             var fileName = Path.GetFileName(artifactFileName);
-            return Path.Combine(AppContext.BaseDirectory, "data", "wireguard", fileName);
+            return Path.Combine(AppContext.BaseDirectory, "data", "amneziawg", fileName);
         }
 
         if (!string.IsNullOrWhiteSpace(_profile.ConfigPath))
@@ -338,14 +338,14 @@ public sealed class WireGuardNodeServer : INodeServer
             return Path.GetFullPath(_profile.ConfigPath);
         }
 
-        return Path.Combine(AppContext.BaseDirectory, "data", "wireguard", "wg0.conf");
+        return Path.Combine(AppContext.BaseDirectory, "data", "amneziawg", "awg0.conf");
     }
 
     private string ResolveInterfaceName()
     {
         var configPath = GetConfigPath();
         var name = Path.GetFileNameWithoutExtension(configPath);
-        return string.IsNullOrWhiteSpace(name) ? "wg0" : name;
+        return string.IsNullOrWhiteSpace(name) ? "awg0" : name;
     }
 
     private static string ResolveLogPath(ServerLaunchProfile profile)
@@ -356,7 +356,7 @@ public sealed class WireGuardNodeServer : INodeServer
         }
 
         var safeId = string.IsNullOrWhiteSpace(profile.ServerId)
-            ? "wireguard"
+            ? "amneziawg"
             : string.Concat(profile.ServerId.Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '_'));
         return Path.Combine(AppContext.BaseDirectory, "data", "server-logs", $"{safeId}.jsonl");
     }
@@ -422,7 +422,7 @@ public sealed class WireGuardNodeServer : INodeServer
                     UserId = peer.Value,
                     IsOnline = false,
                     Health = ServerUserTelemetryHealth.Offline,
-                    StatusMessage = "Peer is present in config but not reported by wg.",
+                    StatusMessage = "Peer is present in config but not reported by awg.",
                     ReportedAt = now
                 });
                 continue;

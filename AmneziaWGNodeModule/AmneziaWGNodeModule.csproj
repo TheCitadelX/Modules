@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CitadelX.AmneziaWGNodeModule</AssemblyName>
+    <RootNamespace>CitadelX.AmneziaWGNodeModule</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CitadelX.Node.Abstractions\CitadelX.Node.Abstractions.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+  </ItemGroup>
+
+  <Target Name="CopyToDropFolder" AfterTargets="Build">
+    <PropertyGroup>
+      <DropFolder>$(MSBuildThisFileDirectory)..\..\Drop\modules</DropFolder>
+    </PropertyGroup>
+    <MakeDir Directories="$(DropFolder)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(DropFolder)" SkipUnchangedFiles="false" />
+  </Target>
+</Project>

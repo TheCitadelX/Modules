@@ -47,15 +47,18 @@
 > `direct` outbound) so pressing through the server wizard produces a runnable sing-box-style config instead
 > of an empty raw `{ "inbounds": [] }` placeholder.
 >
-> **Installer is generic now (D4).** `CoreInstaller` slug = generic normalization of `coreId`; the binary
+> **Installer is generic now (D4/P2).** `CoreInstaller` slug = generic normalization of `coreId`; the binary
 > name flows from `module.Install` (`GitHubReleaseInstall.AssetRules.BinaryName`) through the
-> `core.install` payload — no sing-box-specific switch.
+> `core.install` payload — no sing-box-specific switch. `SystemPackageInstall` also carries declarative
+> package-manager repository hooks, post-install validation hooks, uninstall hooks, and a reboot-required flag.
+> WireGuard and AmneziaWG use these hooks for tool/DKMS validation and package removal metadata.
 >
 > **Subscriptions (B4/R7):** both sing-box builders emit URI links when credentials are available:
 > vless/vmess/trojan/shadowsocks/hysteria2/tuic plus Throne-compatible `socks5://`/`http://` links for
 > `mixed`/`socks`/`http` inbounds. `mixed` emits both socks and HTTP links; unauthenticated proxy inbounds
-> emit host/port-only URIs instead of being dropped. WireGuard returns a Throne-compatible `wg://` URI;
-> AmneziaWG query parameters are included when present in the config/user template.
+> emit host/port-only URIs instead of being dropped. WireGuard returns a Throne-compatible `wg://` URI.
+> AmneziaWG is now its own core id and always emits `enable_amnezia=true` in its `wg://` links, with
+> Amnezia interface/query keys (`Jc/Jmin/Jmax/S*/H*/I*`) mirrored into full `.conf` subscription files.
 > `ICoreModule.BuildSubscription` can return `UriList`, `ConfigFile`, or `Combined`; combined payloads are
 > used when both base64 URI subscriptions and full client config output are available for the same user/server.
 >
@@ -75,6 +78,18 @@
 > server-side `DNS`, stores client DNS in a CitadelX metadata comment, and includes NAT/IP-forwarding `PostUp`/
 > `PostDown` commands so a no-change wizard flow works on a fresh Debian-style host.
 >
+> **AmneziaWG exists as a separate WireGuard fork plugin pair.** `AmneziaWGModule` and
+> `AmneziaWGNodeModule` intentionally do not reuse the WireGuard node server. The backend module declares
+> `RuntimeKind.SystemService`, Linux/root/netadmin/tun compatibility, `SystemPackageInstall` binary
+> `awg-quick` package `amneziawg`, manager-specific package names and pre-install repository steps for
+> apt/dnf based systems, a guided setup schema with Amnezia obfuscation fields, and a
+> `FileArtifact` default filename `awg0.conf`. The node module writes configs under `data/amneziawg`,
+> controls `awg-quick up/down`, probes/telemeters with `awg show`, patches peers by `# CitadelX-UserId`,
+> and uses the shared node-local `wireguard-private-key` generator because AmneziaWG keys are WireGuard
+> X25519 keys. On clean Debian/Ubuntu based nodes, the generic system-package installer runs the module's
+> apt pre-install step to enable the Amnezia repository before installing `amneziawg`; on dnf based systems
+> it enables the AmneziaWG COPR and installs the split `amneziawg-dkms`/`amneziawg-tools` packages.
+>
 > **TrustTunnel Epic D D1 exists as a Process core.** `TrustTunnelModule` and `TrustTunnelNodeModule` are
 > plugin projects for AdGuard TrustTunnel Endpoint. The backend module uses `GitHubReleaseInstall` against
 > `TrustTunnel/TrustTunnel`, binary `trusttunnel_endpoint`, asset prefix `trusttunnel`, and emits a bundled
@@ -89,14 +104,14 @@
 ```mermaid
 flowchart LR
     Backend["Backend"] --> BackendContract["ICoreModule\nbackend abstraction"]
-    BackendContract --> BackendModule["SingboxModule\nSingboxExtendedModule"]
+    BackendContract --> BackendModule["SingboxModule\nSingboxExtendedModule\nWireGuardModule\nAmneziaWGModule\nTrustTunnelModule"]
     BackendModule --> Catalog["/api/cores/catalog\n/releases\n/install"]
     Catalog --> Frontend["Frontend"]
 
     Backend --> Commands["NodeCommandEntity\ncoreId in payload"]
     Commands --> Node["Node"]
     Node --> NodeContract["INodeCoreModule\nnode abstraction"]
-    NodeContract --> NodeModule["SingboxNodeModule\nSingboxExtendedNodeModule"]
+    NodeContract --> NodeModule["SingboxNodeModule\nSingboxExtendedNodeModule\nWireGuardNodeModule\nAmneziaWGNodeModule\nTrustTunnelNodeModule"]
     NodeModule --> Runtime["INodeServer"]
     Runtime --> Process["core process"]
 ```
@@ -124,7 +139,7 @@ Fields (most added additively via default interface implementations, so already-
 - `RuntimeKind` - `Process` / `SystemService` / `RemoteClient` / ...
 - `Config` (`ConfigContract`) - SupportsStructured/Raw, NativeFormat, SupportsUsers, SupportsFlowEditor.
 - `Compatibility` (`CompatibilityDescriptor`) - OS/arch/feature constraints, matched against `NodeEnvironment`.
-- `Install` (`InstallDescriptor`) - `NoInstall` / `GitHubReleaseInstall` / `SystemPackageInstall` / `ContainerImageInstall` (+ `AssetMatchRules`).
+- `Install` (`InstallDescriptor`) - `NoInstall` / `GitHubReleaseInstall` / `SystemPackageInstall` / `ContainerImageInstall` (+ `AssetMatchRules`, manager-specific package names, and optional pre-install shell steps for repository setup).
 - `BuildConfig(ConfigInput, NodeContext)` - returns the polymorphic `ConfigArtifact`.
 - `BuildSubscription(SubscriptionRequest)` - typed per-module subscription payload (`UriList`, `ConfigFile`, or `Combined`).
 - `BuildSubscriptionLinks(SubscriptionRequest)` - legacy URI-list hook kept for compatibility.
@@ -219,6 +234,44 @@ Core metadata:
 - repo: `CoreRepos:SingboxExtended`
 - node module DLL: `CitadelX.SingboxExtendedNodeModule.dll`
 
+### WireGuardModule
+
+Path:
+
+```text
+Modules/WireGuardModule/
+```
+
+Core metadata:
+
+- `Id`: `WireGuard`
+- aliases: `wireguard`, `wg`, `wg-quick`
+- runtime: `SystemService`
+- install: `SystemPackageInstall`, binary `wg-quick`, Linux package `wireguard-tools`
+- config: INI `FileArtifact` named from the interface (`wg0.conf` by default)
+- subscriptions: combined Throne-compatible `wg://` URI plus full/downloadable client `.conf`
+
+### AmneziaWGModule
+
+Path:
+
+```text
+Modules/AmneziaWGModule/
+```
+
+Core metadata:
+
+- `Id`: `AmneziaWG`
+- aliases: `amneziawg`, `amnezia-wg`, `amnezia`, `awg`, `awg-quick`
+- runtime: `SystemService`
+- install: `SystemPackageInstall`, binary `awg-quick`, Linux package `amneziawg`, apt/dnf repository pre-install steps
+- config: INI `FileArtifact` named from the interface (`awg0.conf` by default)
+- guided setup: WireGuard-style interface settings plus Amnezia obfuscation fields (`Jc/Jmin/Jmax/S*/H*/I*`)
+- subscriptions: combined `wg://` URI with `enable_amnezia=true` plus full/downloadable client `.conf`
+
+AmneziaWG is intentionally not exposed as a WireGuard mode. It is a separate core id so catalog, availability,
+install status, server profiles, and subscriptions can diverge from kernel WireGuard cleanly.
+
 ## Current Node Modules
 
 ### SingboxNodeModule
@@ -287,6 +340,31 @@ Modules/SingboxExtendedNodeModule/
 SingboxExtended is treated as a fully independent fork: it shares no code with `SingboxNodeModule`, so the two
 may diverge freely. Any behavioral fix must be applied to both copies if it should apply to both.
 
+### WireGuardNodeModule
+
+Path:
+
+```text
+Modules/WireGuardNodeModule/
+```
+
+`WireGuardNodeModule` implements Linux `wg-quick` control for `WireGuard`: it writes `FileArtifact` configs,
+starts/stops with `wg-quick up/down`, probes and reads telemetry through `wg show`, and patches `[Peer]`
+blocks by `# CitadelX-UserId`.
+
+### AmneziaWGNodeModule
+
+Path:
+
+```text
+Modules/AmneziaWGNodeModule/
+```
+
+`AmneziaWGNodeModule` is the Amnezia fork runtime: it stores configs under `data/amneziawg`, starts/stops with
+`awg-quick up/down`, probes and reads telemetry through `awg show`, and patches peers with the same
+`# CitadelX-UserId` convention. It uses the same node-local `wireguard-private-key` generator for server
+private/public keys because AmneziaWG uses WireGuard-compatible X25519 keys.
+
 ## Backend + Node Module Binding
 
 The binding is convention plus metadata:
@@ -345,7 +423,7 @@ Guided setup is schema-driven (Step 7, done): a module exposes `SimpleSetupSchem
 2. Implement `ICoreModule`: pick a stable `Id` + aliases + `IconKey`; declare `RuntimeKind`, `Config` (`ConfigContract`), `Compatibility`, `Install`; implement `BuildConfig` and, if the core has client subscriptions, typed `BuildSubscription` (legacy `BuildSubscriptionLinks` is still accepted for URI-list-only modules).
 3. Create a node module project that references `CitadelX.Node.Abstractions`. Implement `INodeCoreModule` and an `INodeServer` whose `Apply(ConfigArtifact)` materializes the config and whose lifecycle starts/stops the runtime.
 4. Add the `CopyToDropFolder` MSBuild target (`AfterTargets="Build"`) to both csproj so each DLL lands in repo-root `Drop/modules/`. **No DI registration anywhere** — the plugin loaders pick them up.
-5. The Node installer is generic (D4): the binary name flows from `Install` metadata; no code change needed for a new GitHub-release core. System-package / container installs use the matching `InstallDescriptor`.
+5. The Node installer is generic (D4): the binary name flows from `Install` metadata; no code change needed for a new GitHub-release core. System-package installs can declare package-manager-specific package names and pre-install shell steps for repository setup; container installs are declared but not yet executed by Node.
 6. Frontend is schema-driven: provide `SimpleSetupSchema` for a guided form, or rely on raw mode. Avoid core-specific Frontend code; use catalog capability fields + `CoreIcon`.
 
 ## Packaging
@@ -363,6 +441,9 @@ The zip packaging below is for **distributing node-side module DLLs to remote no
 ```text
 Modules/tools/Singbox.zip
 Modules/tools/SingboxExtended.zip
+Modules/tools/WireGuard.zip
+Modules/tools/AmneziaWG.zip
+Modules/tools/TrustTunnel.zip
 ```
 
 Each package includes:
@@ -375,7 +456,7 @@ When the expected backend folder exists, the script copies:
 - package zip to backend `modules/packages`;
 - backend module DLL to backend `modules`.
 
-Current workspace caveat: script expects a sibling `CitadelX.Backend`, while this workspace folder is named `Backend`.
+The script prefers this workspace's `Backend` folder and falls back to the old `CitadelX.Backend` folder name.
 
 ## Versioning And Compatibility
 

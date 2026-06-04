@@ -22,6 +22,7 @@ The stable bridge between the halves is `CoreId` plus aliases.
 - `SingboxNodeModule/` - node runtime/config/user implementation for sing-box.
 - `SingboxExtendedNodeModule/` - independent node module for `SingboxExtended`; it has its own duplicated runtime engine.
 - `WireGuardModule/` / `WireGuardNodeModule/` - Linux `wg-quick` WireGuard backend/node plugin pair.
+- `AmneziaWGModule/` / `AmneziaWGNodeModule/` - Linux `awg-quick` AmneziaWG backend/node plugin pair.
 - `TrustTunnelModule/` / `TrustTunnelNodeModule/` - AdGuard TrustTunnel endpoint backend/node plugin pair.
 - `tools/build-modules.ps1` - builds and packages module DLLs.
 
@@ -42,6 +43,7 @@ The stable bridge between the halves is `CoreId` plus aliases.
 - `Singbox`
 - `SingboxExtended`
 - `WireGuard`
+- `AmneziaWG`
 - `TrustTunnel`
 
 ## Build Commands
@@ -57,6 +59,8 @@ dotnet build .\Modules\SingboxExtendedModule\CitadelX.SingboxExtendedModule.cspr
 dotnet build .\Modules\SingboxExtendedNodeModule\SingboxExtendedNodeModule.csproj
 dotnet build .\Modules\WireGuardModule\CitadelX.WireGuardModule.csproj
 dotnet build .\Modules\WireGuardNodeModule\WireGuardNodeModule.csproj
+dotnet build .\Modules\AmneziaWGModule\CitadelX.AmneziaWGModule.csproj
+dotnet build .\Modules\AmneziaWGNodeModule\AmneziaWGNodeModule.csproj
 dotnet build .\Modules\TrustTunnelModule\CitadelX.TrustTunnelModule.csproj
 dotnet build .\Modules\TrustTunnelNodeModule\TrustTunnelNodeModule.csproj
 ```
@@ -67,7 +71,7 @@ Packaging:
 .\Modules\tools\build-modules.ps1
 ```
 
-Known packaging issue: the script currently assumes a sibling backend folder named `CitadelX.Backend`; this workspace uses `Backend`. Builds still work, but automatic copy targets may not.
+Packaging script note: the script now prefers this workspace's `Backend` folder and falls back to the old `CitadelX.Backend` folder name.
 
 ## Verification
 
@@ -101,7 +105,8 @@ npm run build
 - `SingboxModule.SimpleSetupSchema` exposes a real schema/defaults; the Frontend renders it generically via `SchemaForm.vue` (no core-specific form).
 - `SingboxExtendedModule.SimpleSetupSchema` exposes a minimal runnable mixed-inbound/direct-outbound setup; keep it independent from the base sing-box module.
 - WireGuard defaults are meant to work on a clean Linux node: artifact filename `wg0.conf` is authoritative, server-side config omits `DNS`, client DNS is carried as `# CitadelX-ClientDNS`, and default `PostUp`/`PostDown` enable IPv4 forwarding plus NAT for `10.77.0.0/24`.
-- `CoreInstaller` is generic (D4): the binary name comes from module `Install` metadata, not a hardcoded sing-box name.
+- AmneziaWG is a separate core id, not a WireGuard mode. It controls `awg`/`awg-quick`, stores configs under `data/amneziawg`, emits `wg://` URIs with `enable_amnezia=true`, and returns full `.conf` subscription files that include Amnezia interface keys. Its `SystemPackageInstall` declares apt/dnf pre-install repository steps plus package-manager-specific package names.
+- `CoreInstaller` is generic (D4): the binary name, package names, and pre-install repository steps come from module `Install` metadata, not hardcoded core names.
 - `SingboxConfigPatcher` chooses user key based on inbound type: `username` for `mixed`/`socks`/`http`, otherwise `name`.
 - Disabling sing-box users removes them from config and stores their previous JSON in `DisabledUserStore`.
 - `SingboxExtendedNodeModule` has its **own** duplicated engine (does not use `SingboxNodeServer`) — SingboxExtended is a fully independent fork; apply fixes to both copies when needed.

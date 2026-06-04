@@ -5,7 +5,10 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $dist = $PSScriptRoot
-$backendRoot = Join-Path $root "..\CitadelX.Backend"
+$backendRoot = Join-Path $root "..\Backend"
+if (!(Test-Path $backendRoot)) {
+    $backendRoot = Join-Path $root "..\CitadelX.Backend"
+}
 $backendPackages = Join-Path $backendRoot "modules\packages"
 $backendModules = Join-Path $backendRoot "modules"
 if (Test-Path $backendRoot) {
@@ -27,6 +30,27 @@ $modules = @(
         BackendDll = "CitadelX.SingboxExtendedModule.dll"
         NodeProject = "SingboxExtendedNodeModule\SingboxExtendedNodeModule.csproj"
         NodeDll = "CitadelX.SingboxExtendedNodeModule.dll"
+    },
+    @{
+        Name = "WireGuard"
+        BackendProject = "WireGuardModule\CitadelX.WireGuardModule.csproj"
+        BackendDll = "CitadelX.WireGuardModule.dll"
+        NodeProject = "WireGuardNodeModule\WireGuardNodeModule.csproj"
+        NodeDll = "CitadelX.WireGuardNodeModule.dll"
+    },
+    @{
+        Name = "AmneziaWG"
+        BackendProject = "AmneziaWGModule\CitadelX.AmneziaWGModule.csproj"
+        BackendDll = "CitadelX.AmneziaWGModule.dll"
+        NodeProject = "AmneziaWGNodeModule\AmneziaWGNodeModule.csproj"
+        NodeDll = "CitadelX.AmneziaWGNodeModule.dll"
+    },
+    @{
+        Name = "TrustTunnel"
+        BackendProject = "TrustTunnelModule\CitadelX.TrustTunnelModule.csproj"
+        BackendDll = "CitadelX.TrustTunnelModule.dll"
+        NodeProject = "TrustTunnelNodeModule\TrustTunnelNodeModule.csproj"
+        NodeDll = "CitadelX.TrustTunnelNodeModule.dll"
     }
 )
 

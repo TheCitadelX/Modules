@@ -7,49 +7,133 @@ using CitadelX.Backend.Cores;
 using CitadelX.Backend.Options;
 using CitadelX.Modules.Abstractions;
 
-namespace CitadelX.WireGuardModule;
+namespace CitadelX.AmneziaWGModule;
 
-public sealed class WireGuardModule : ICoreModule
+public sealed class AmneziaWGModule : ICoreModule
 {
     private const string ServerPrivateKeyToken = "${node.secret.wireguardPrivateKey}";
 
-    public string Id => "WireGuard";
-    public string Label => "WireGuard";
-    public string? Description => "Kernel WireGuard via wg-quick";
+    public string Id => "AmneziaWG";
+    public string Label => "AmneziaWG";
+    public string? Description => "Amnezia WireGuard via awg-quick";
     public bool Ready => true;
     public bool SupportsAutoInstall => true;
     public bool SupportsSimpleSetup => true;
-    public CoreConfigSchema? SimpleSetupSchema => WireGuardSimpleSetupSchema.Schema;
+    public CoreConfigSchema? SimpleSetupSchema => AmneziaWGSimpleSetupSchema.Schema;
     public CoreLaunchProfile? LaunchProfile => new()
     {
         ArgumentsTemplate = "",
         UseRunCommand = false
     };
     public GitHubRepo? Repo => null;
-    public string? NodeModuleAssemblyName => "CitadelX.WireGuardNodeModule.dll";
-    public IReadOnlyList<string> Aliases => new[] { "wireguard", "wg", "wg-quick" };
+    public string? NodeModuleAssemblyName => "CitadelX.AmneziaWGNodeModule.dll";
+    public IReadOnlyList<string> Aliases => new[] { "amneziawg", "amnezia-wg", "amnezia", "awg", "awg-quick" };
     public string? IconKey => "wireguard";
     public RuntimeKind RuntimeKind => RuntimeKind.SystemService;
 
     public CompatibilityDescriptor Compatibility => new()
     {
         SupportedOs = new[] { OsKind.Linux },
-        RequiredFeatures = new[] { RequiredFeature.RootOrAdmin, RequiredFeature.NetAdmin, RequiredFeature.TunDevice, RequiredFeature.WireguardKernelModule }
+        RequiredFeatures = new[] { RequiredFeature.RootOrAdmin, RequiredFeature.NetAdmin, RequiredFeature.TunDevice }
     };
 
     public InstallDescriptor Install => new SystemPackageInstall
     {
-        BinaryName = "wg-quick",
+        BinaryName = "awg-quick",
         PackageNames = new Dictionary<OsKind, string>
         {
-            [OsKind.Linux] = "wireguard-tools"
+            [OsKind.Linux] = "amneziawg"
+        },
+        PackageNamesByManager = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["apt-get"] = new[] { "amneziawg" },
+            ["dnf"] = new[] { "amneziawg-dkms", "amneziawg-tools" },
+            ["yum"] = new[] { "amneziawg-dkms", "amneziawg-tools" }
+        },
+        PreInstallSteps = new[]
+        {
+            new SystemPackagePreInstallStep
+            {
+                PackageManagers = new[] { "apt-get" },
+                Description = "Prepare AmneziaWG apt repository for Debian/Ubuntu based systems",
+                Shell = """
+                set -e
+                . /etc/os-release
+                apt-get update
+                apt-get install -y software-properties-common python3-launchpadlib gnupg2
+                if ! apt-get install -y "linux-headers-$(uname -r)"; then
+                    if [ "${ID:-}" = "debian" ] || echo " ${ID_LIKE:-} " | grep -Eq ' debian '; then
+                        apt-get install -y linux-image-amd64 linux-headers-amd64 || true
+                    else
+                        apt-get install -y linux-headers-generic || true
+                    fi
+                fi
+                if [ "${ID:-}" = "ubuntu" ] || [ "${ID:-}" = "linuxmint" ] || echo " ${ID_LIKE:-} " | grep -Eq ' ubuntu '; then
+                    add-apt-repository -y ppa:amnezia/ppa
+                elif [ "${ID:-}" = "debian" ] || echo " ${ID_LIKE:-} " | grep -Eq ' debian '; then
+                    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 57290828
+                    cat >/etc/apt/sources.list.d/amnezia.list <<'EOF'
+                deb https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu focal main
+                deb-src https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu focal main
+                EOF
+                else
+                    echo "Unsupported apt-based distro for automatic AmneziaWG repository setup: ${ID:-unknown}" >&2
+                    exit 1
+                fi
+                apt-get update
+                """
+            },
+            new SystemPackagePreInstallStep
+            {
+                PackageManagers = new[] { "dnf" },
+                Description = "Enable AmneziaWG COPR repository for dnf based systems",
+                Shell = """
+                set -e
+                dnf install -y 'dnf-command(copr)' || dnf install -y dnf-plugins-core
+                dnf copr enable -y amneziavpn/amneziawg
+                """
+            }
         },
         PostInstallValidationSteps = new[]
         {
             new SystemPackageValidationStep
             {
-                Description = "Validate WireGuard tools",
-                Shell = "set -e\ncommand -v wg >/dev/null\ncommand -v wg-quick >/dev/null\nwg --version || true"
+                Description = "Validate awg tools and loadable kernel module",
+                Shell = """
+                set -e
+                command -v awg >/dev/null
+                command -v awg-quick >/dev/null
+                awg --version || true
+                if modprobe -n -q amneziawg || modprobe -n -q awg; then
+                    exit 0
+                fi
+                echo "AmneziaWG kernel module is not loadable for running kernel $(uname -r)." >&2
+                if command -v dkms >/dev/null; then
+                    dkms status | grep -Ei 'amnezia|awg' >&2 || true
+                    if dkms status | grep -Ei 'amnezia|awg' | grep -q "installed.*$(uname -r)"; then
+                        exit 0
+                    fi
+                fi
+                exit 1
+                """
+            },
+            new SystemPackageValidationStep
+            {
+                PackageManagers = new[] { "apt-get", "dnf", "yum" },
+                Description = "Validate matching kernel headers for DKMS",
+                Shell = """
+                set -e
+                if [ ! -d "/lib/modules/$(uname -r)/build" ]; then
+                    echo "Kernel headers for running kernel $(uname -r) are not installed, so AmneziaWG DKMS cannot build for this booted kernel." >&2
+                    latest_headers="$(ls -1d /lib/modules/*/build 2>/dev/null | sed 's#/lib/modules/##;s#/build##' | sort -V | tail -n 1 || true)"
+                    if [ -n "$latest_headers" ]; then
+                        echo "Installed headers are for kernel $latest_headers. Reboot into that kernel or install linux-headers-$(uname -r)." >&2
+                    else
+                        echo "Install matching kernel headers: linux-headers-$(uname -r)." >&2
+                    fi
+                    exit 1
+                fi
+                """
             }
         },
         UninstallSteps = new[]
@@ -57,17 +141,17 @@ public sealed class WireGuardModule : ICoreModule
             new SystemPackageUninstallStep
             {
                 PackageManagers = new[] { "apt-get" },
-                Description = "Remove WireGuard tools apt package",
-                Shell = "apt-get remove -y wireguard-tools || true"
+                Description = "Remove AmneziaWG apt packages",
+                Shell = "apt-get remove -y amneziawg || true"
             },
             new SystemPackageUninstallStep
             {
                 PackageManagers = new[] { "dnf", "yum" },
-                Description = "Remove WireGuard tools rpm package",
-                Shell = "dnf remove -y wireguard-tools || yum remove -y wireguard-tools || true"
+                Description = "Remove AmneziaWG rpm packages",
+                Shell = "dnf remove -y amneziawg-dkms amneziawg-tools || yum remove -y amneziawg-dkms amneziawg-tools || true"
             }
         },
-        MayRequireReboot = false
+        MayRequireReboot = true
     };
 
     public ConfigContract Config => new()
@@ -78,8 +162,8 @@ public sealed class WireGuardModule : ICoreModule
         SupportsUsers = true,
         UserIdentity = UserIdentityKind.WireguardPeer,
         SupportsFlowEditor = false,
-        SchemaJson = WireGuardSimpleSetupSchema.Schema.SchemaJson,
-        DefaultsJson = WireGuardSimpleSetupSchema.Schema.DefaultsJson
+        SchemaJson = AmneziaWGSimpleSetupSchema.Schema.SchemaJson,
+        DefaultsJson = AmneziaWGSimpleSetupSchema.Schema.DefaultsJson
     };
 
     public ConfigArtifact BuildConfig(ConfigInput input, NodeContext node)
@@ -90,9 +174,9 @@ public sealed class WireGuardModule : ICoreModule
 
         var content = input.Mode == ConfigInputMode.Raw
             ? input.Raw ?? string.Empty
-            : BuildWireGuardConfig(structured ?? new JsonObject());
+            : BuildAmneziaWGConfig(structured ?? new JsonObject());
 
-        var interfaceName = GetString(structured, "interfaceName") ?? "wg0";
+        var interfaceName = GetString(structured, "interfaceName") ?? "awg0";
         return new FileArtifact
         {
             FileName = $"{SanitizeInterfaceName(interfaceName)}.conf",
@@ -163,14 +247,15 @@ public sealed class WireGuardModule : ICoreModule
         };
     }
 
-    private static string BuildWireGuardConfig(JsonObject input)
+    private static string BuildAmneziaWGConfig(JsonObject input)
     {
         var sb = new StringBuilder();
         sb.AppendLine("[Interface]");
         sb.AppendLine($"PrivateKey = {ServerPrivateKeyToken}");
-        AddLine(sb, "Address", GetString(input, "interfaceAddress") ?? "10.77.0.1/24");
+        AddLine(sb, "Address", GetString(input, "interfaceAddress") ?? "10.78.0.1/24");
         AddLine(sb, "ListenPort", GetString(input, "listenPort") ?? "51820");
         AddLine(sb, "MTU", GetString(input, "mtu"));
+        AddAmneziaInterfaceLines(sb, input);
         AddLine(sb, "Table", GetString(input, "table"));
         AddLine(sb, "PostUp", GetString(input, "postUp"));
         AddLine(sb, "PostDown", GetString(input, "postDown"));
@@ -223,6 +308,7 @@ public sealed class WireGuardModule : ICoreModule
         AddLine(sb, "Address", address);
         AddLine(sb, "DNS", dns);
         AddLine(sb, "MTU", mtu);
+        AddAmneziaInterfaceLines(sb, credentials, request.Config);
         sb.AppendLine();
         sb.AppendLine("[Peer]");
         AddLine(sb, "PublicKey", serverPublicKey);
@@ -306,11 +392,54 @@ public sealed class WireGuardModule : ICoreModule
             }
         }
 
-        var enabled = IsTrue(FirstString(credentials, "enable_amnezia", "enableAmnezia"))
-                      || query.Count > startIndex;
-        if (enabled)
+        query.Insert(startIndex, "enable_amnezia=true");
+    }
+
+    private static void AddAmneziaInterfaceLines(StringBuilder sb, JsonObject input)
+    {
+        AddLine(sb, "Jc", GetString(input, "jc") ?? "4");
+        AddLine(sb, "Jmin", GetString(input, "jmin") ?? "40");
+        AddLine(sb, "Jmax", GetString(input, "jmax") ?? "70");
+        AddLine(sb, "S1", GetString(input, "s1") ?? "80");
+        AddLine(sb, "S2", GetString(input, "s2") ?? "120");
+        AddLine(sb, "S3", GetString(input, "s3"));
+        AddLine(sb, "S4", GetString(input, "s4"));
+        AddLine(sb, "H1", GetString(input, "h1") ?? "1");
+        AddLine(sb, "H2", GetString(input, "h2") ?? "2");
+        AddLine(sb, "H3", GetString(input, "h3") ?? "3");
+        AddLine(sb, "H4", GetString(input, "h4") ?? "4");
+        AddLine(sb, "I1", GetString(input, "i1"));
+        AddLine(sb, "I2", GetString(input, "i2"));
+        AddLine(sb, "I3", GetString(input, "i3"));
+        AddLine(sb, "I4", GetString(input, "i4"));
+        AddLine(sb, "I5", GetString(input, "i5"));
+    }
+
+    private static void AddAmneziaInterfaceLines(StringBuilder sb, JsonObject credentials, string config)
+    {
+        var mappings = new (string Key, string[] CredentialKeys)[]
         {
-            query.Insert(startIndex, "enable_amnezia=true");
+            ("Jc", new[] { "jc", "junk_packet_count", "junkPacketCount" }),
+            ("Jmin", new[] { "jmin", "junk_packet_min_size", "junkPacketMinSize" }),
+            ("Jmax", new[] { "jmax", "junk_packet_max_size", "junkPacketMaxSize" }),
+            ("S1", new[] { "s1", "init_packet_junk_size", "initPacketJunkSize" }),
+            ("S2", new[] { "s2", "response_packet_junk_size", "responsePacketJunkSize" }),
+            ("S3", new[] { "s3", "underload_packet_junk_size", "underloadPacketJunkSize" }),
+            ("S4", new[] { "s4", "transport_packet_junk_size", "transportPacketJunkSize" }),
+            ("H1", new[] { "h1", "init_packet_magic_header", "initPacketMagicHeader" }),
+            ("H2", new[] { "h2", "response_packet_magic_header", "responsePacketMagicHeader" }),
+            ("H3", new[] { "h3", "underload_packet_magic_header", "underloadPacketMagicHeader" }),
+            ("H4", new[] { "h4", "transport_packet_magic_header", "transportPacketMagicHeader" }),
+            ("I1", new[] { "i1" }),
+            ("I2", new[] { "i2" }),
+            ("I3", new[] { "i3" }),
+            ("I4", new[] { "i4" }),
+            ("I5", new[] { "i5" })
+        };
+
+        foreach (var mapping in mappings)
+        {
+            AddLine(sb, mapping.Key, FirstNonEmpty(FirstString(credentials, mapping.CredentialKeys), ResolveConfigValue(config, mapping.Key)));
         }
     }
 
@@ -588,12 +717,12 @@ public sealed class WireGuardModule : ICoreModule
     private static string SanitizeInterfaceName(string value)
     {
         var sanitized = string.Concat(value.Trim().Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '_'));
-        return string.IsNullOrWhiteSpace(sanitized) ? "wg0" : sanitized;
+        return string.IsNullOrWhiteSpace(sanitized) ? "awg0" : sanitized;
     }
 
     private static string SafeFileName(string value)
     {
         var safe = string.Concat(value.Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '_'));
-        return string.IsNullOrWhiteSpace(safe) ? "wireguard-client" : safe;
+        return string.IsNullOrWhiteSpace(safe) ? "amneziawg-client" : safe;
     }
 }
