@@ -70,6 +70,17 @@ public sealed class RollingServerLog
         }
     }
 
+    public Task ClearAsync()
+    {
+        lock (_sync)
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path) ?? AppContext.BaseDirectory);
+            File.WriteAllText(_path, string.Empty);
+            _nextOffset = 0;
+            return Task.CompletedTask;
+        }
+    }
+
     private ServerLogChunk ReadLocked(ServerLogQuery query)
     {
         if (!File.Exists(_path))

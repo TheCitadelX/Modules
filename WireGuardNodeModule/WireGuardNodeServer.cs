@@ -38,6 +38,9 @@ public sealed class WireGuardNodeServer : INodeServer
     public Task<ServerLogChunk> ReadLogsAsync(ServerLogQuery query)
         => _log.ReadAsync(query);
 
+    public Task ClearLogsAsync()
+        => _log.ClearAsync();
+
     public ServerRuntimeState GetRuntimeState()
     {
         var running = ProbeRunning();

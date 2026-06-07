@@ -54,6 +54,9 @@ public sealed class TrustTunnelNodeServer : INodeServer
     public Task<ServerLogChunk> ReadLogsAsync(ServerLogQuery query)
         => _log.ReadAsync(query);
 
+    public Task ClearLogsAsync()
+        => _log.ClearAsync();
+
     public ServerRuntimeState GetRuntimeState()
     {
         lock (_sync)

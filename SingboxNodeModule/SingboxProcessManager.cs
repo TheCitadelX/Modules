@@ -276,6 +276,14 @@ public sealed class SingboxProcessManager
         }
     }
 
+    public Task ClearLogsAsync()
+    {
+        lock (_sync)
+        {
+            return _log?.ClearAsync() ?? Task.CompletedTask;
+        }
+    }
+
     public ServerRuntimeState GetRuntimeState()
     {
         lock (_sync)

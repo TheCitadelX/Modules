@@ -30,6 +30,11 @@ public sealed class SingboxNodeServer : INodeServer
         return _processManager.ReadLogsAsync(query);
     }
 
+    public Task ClearLogsAsync()
+    {
+        return _processManager.ClearLogsAsync();
+    }
+
     public ServerRuntimeState GetRuntimeState()
     {
         return _processManager.GetRuntimeState();

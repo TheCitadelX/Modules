@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Numerics;
 
 namespace CitadelX.SingboxModule;
 
@@ -357,11 +358,14 @@ public static class SingboxSubscriptionBuilder
         AddQueryValue(query, "alpn", JoinArray(inbound.Tls?["alpn"] as JsonArray));
         AddQueryValue(query, "fp", GetString(inbound.Tls?["utls"]?["fingerprint"])
             ?? GetString(inbound.Tls?["fingerprint"])
-            ?? GetString(inbound.Tls?["fp"]));
+            ?? GetString(inbound.Tls?["fp"])
+            ?? (realityEnabled ? "chrome" : null));
 
         if (realityEnabled)
         {
-            AddQueryValue(query, "pbk", GetString(reality?["public_key"]) ?? GetString(reality?["publicKey"]));
+            AddQueryValue(query, "pbk", GetString(reality?["public_key"])
+                ?? GetString(reality?["publicKey"])
+                ?? TryDeriveRealityPublicKey(GetString(reality?["private_key"]) ?? GetString(reality?["privateKey"])));
             AddQueryValue(query, "sid", GetString(reality?["short_id"]) ?? GetString(reality?["shortId"]));
         }
     }
@@ -535,6 +539,100 @@ public static class SingboxSubscriptionBuilder
 
     private static string Base64Url(string value)
         => Convert.ToBase64String(Encoding.UTF8.GetBytes(value)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    private static string? TryDeriveRealityPublicKey(string? privateKey)
+    {
+        if (string.IsNullOrWhiteSpace(privateKey))
+        {
+            return null;
+        }
+
+        try
+        {
+            var scalar = DecodeBase64Url(privateKey);
+            ClampPrivateKey(scalar);
+            return Base64UrlBytes(X25519(scalar));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string Base64UrlBytes(byte[] bytes)
+        => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    private static byte[] DecodeBase64Url(string value)
+    {
+        var normalized = value.Trim().Replace('-', '+').Replace('_', '/');
+        normalized = normalized.PadRight(normalized.Length + ((4 - normalized.Length % 4) % 4), '=');
+        return Convert.FromBase64String(normalized);
+    }
+
+    private static void ClampPrivateKey(byte[] key)
+    {
+        if (key.Length != 32)
+        {
+            throw new ArgumentException("Reality keys must be 32 bytes.");
+        }
+
+        key[0] &= 248;
+        key[31] &= 127;
+        key[31] |= 64;
+    }
+
+    private static byte[] X25519(byte[] scalar)
+    {
+        var p = (BigInteger.One << 255) - 19;
+        var x1 = new BigInteger(new byte[] { 9 }, isUnsigned: true, isBigEndian: false);
+        var x2 = BigInteger.One;
+        var z2 = BigInteger.Zero;
+        var x3 = x1;
+        var z3 = BigInteger.One;
+        var swap = 0;
+
+        for (var t = 254; t >= 0; t--)
+        {
+            var kt = (scalar[t / 8] >> (t & 7)) & 1;
+            swap ^= kt;
+            ConditionalSwap(swap, ref x2, ref x3);
+            ConditionalSwap(swap, ref z2, ref z3);
+            swap = kt;
+
+            var a = Mod(x2 + z2, p);
+            var aa = Mod(a * a, p);
+            var b = Mod(x2 - z2, p);
+            var bb = Mod(b * b, p);
+            var e = Mod(aa - bb, p);
+            var c = Mod(x3 + z3, p);
+            var d = Mod(x3 - z3, p);
+            var da = Mod(d * a, p);
+            var cb = Mod(c * b, p);
+            x3 = Mod((da + cb) * (da + cb), p);
+            z3 = Mod(x1 * Mod((da - cb) * (da - cb), p), p);
+            x2 = Mod(aa * bb, p);
+            z2 = Mod(e * (aa + 121665 * e), p);
+        }
+
+        ConditionalSwap(swap, ref x2, ref x3);
+        ConditionalSwap(swap, ref z2, ref z3);
+        var result = Mod(x2 * BigInteger.ModPow(z2, p - 2, p), p);
+        var bytes = result.ToByteArray(isUnsigned: true, isBigEndian: false);
+        Array.Resize(ref bytes, 32);
+        return bytes;
+    }
+
+    private static void ConditionalSwap(int swap, ref BigInteger a, ref BigInteger b)
+    {
+        if (swap == 0) return;
+        (a, b) = (b, a);
+    }
+
+    private static BigInteger Mod(BigInteger value, BigInteger modulus)
+    {
+        var result = value % modulus;
+        return result.Sign < 0 ? result + modulus : result;
+    }
 
     private static string Escape(string value)
         => Uri.EscapeDataString(value);

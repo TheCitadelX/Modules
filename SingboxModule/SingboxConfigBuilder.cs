@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -54,7 +55,7 @@ public static class SingboxConfigBuilder
 
     private static JsonObject BuildInbound(JsonObject s)
     {
-        var type = Str(s, "inboundType");
+        var type = ResolveInboundType(s);
         var inbound = new JsonObject
         {
             ["type"] = type,
@@ -109,38 +110,51 @@ public static class SingboxConfigBuilder
         if (type == "vmess")
         {
             var user = new JsonObject();
-            AddTrimmed(user, "name", Str(s, "inboundUserName"));
-            AddTrimmed(user, "uuid", Str(s, "inboundUserUuid"));
-            if (JsNumber(Str(s, "inboundAlterId")) > 0) user["alterId"] = NumNode(Str(s, "inboundAlterId"));
+            var uuid = Str(s, "inboundUserUuid").Trim();
+            if (uuid.Length > 0)
+            {
+                AddTrimmed(user, "name", Str(s, "inboundUserName"));
+                user["uuid"] = uuid;
+                if (JsNumber(Str(s, "inboundAlterId")) > 0) user["alterId"] = NumNode(Str(s, "inboundAlterId"));
+            }
             inbound["users"] = user.Count > 0 ? new JsonArray(user) : new JsonArray();
         }
 
         if (type == "trojan")
         {
             var user = new JsonObject();
-            AddTrimmed(user, "name", Str(s, "inboundUserName"));
-            AddTrimmed(user, "password", Str(s, "inboundUserPassword"));
+            var password = Str(s, "inboundUserPassword").Trim();
+            if (password.Length > 0)
+            {
+                AddTrimmed(user, "name", Str(s, "inboundUserName"));
+                user["password"] = password;
+            }
             inbound["users"] = user.Count > 0 ? new JsonArray(user) : new JsonArray();
         }
 
         if (type == "vless")
         {
             var user = new JsonObject();
-            AddTrimmed(user, "name", Str(s, "inboundUserName"));
-            AddTrimmed(user, "uuid", Str(s, "inboundUserUuid"));
-            AddTrimmed(user, "flow", Str(s, "inboundUserFlow"));
+            var uuid = Str(s, "inboundUserUuid").Trim();
+            if (uuid.Length > 0)
+            {
+                AddTrimmed(user, "name", Str(s, "inboundUserName"));
+                user["uuid"] = uuid;
+                AddTrimmed(user, "flow", Str(s, "inboundUserFlow"));
+            }
             inbound["users"] = user.Count > 0 ? new JsonArray(user) : new JsonArray();
         }
 
         if (type is "vless" or "trojan" or "vmess")
         {
             var tls = BuildTls(
-                enabled: Bool(s, "inboundTlsEnabled"),
+                enabled: IsInboundTlsEnabled(s),
                 serverName: Str(s, "inboundTlsServerName"),
                 alpn: Str(s, "inboundTlsAlpn"),
                 certificatePath: Str(s, "inboundTlsCertificatePath"),
                 keyPath: Str(s, "inboundTlsKeyPath"),
                 insecure: false);
+            AddRealityIfNeeded(tls, s);
             if (tls is not null) inbound["tls"] = tls;
             var transport = BuildTransport(s, "inbound");
             if (transport is not null) inbound["transport"] = transport;
@@ -151,7 +165,7 @@ public static class SingboxConfigBuilder
 
     private static JsonObject BuildOutbound(JsonObject s)
     {
-        var type = Str(s, "outboundType");
+        var type = ResolveOutboundType(s);
         var outbound = new JsonObject
         {
             ["type"] = type,
@@ -340,6 +354,45 @@ public static class SingboxConfigBuilder
         return tls;
     }
 
+    private static void AddRealityIfNeeded(JsonObject? tls, JsonObject s)
+    {
+        if (tls is null || ResolveInboundSecurity(s) != "reality")
+        {
+            return;
+        }
+
+        var handshakeServer = FirstNonEmpty(Str(s, "inboundRealityHandshakeServer"), Str(s, "inboundTlsServerName"), "www.cloudflare.com")!;
+        var handshakePort = JsNumber(FirstNonEmpty(Str(s, "inboundRealityHandshakePort"), "443")!);
+        if (!double.IsFinite(handshakePort) || handshakePort < 1)
+        {
+            handshakePort = 443;
+        }
+
+        var privateKey = Str(s, "inboundRealityPrivateKey").Trim();
+        if (privateKey.Length == 0)
+        {
+            privateKey = GenerateRealityPrivateKey();
+        }
+
+        var reality = new JsonObject
+        {
+            ["enabled"] = true,
+            ["handshake"] = new JsonObject
+            {
+                ["server"] = handshakeServer.Trim(),
+                ["server_port"] = JsonValue.Create((long)Math.Floor(handshakePort))
+            },
+            ["private_key"] = privateKey,
+            ["short_id"] = FirstNonEmpty(Str(s, "inboundRealityShortId"), GenerateRealityShortId())
+        };
+
+        AddTrimmed(reality, "max_time_difference", Str(s, "inboundRealityMaxTimeDifference"));
+        tls["reality"] = reality;
+
+        // uTLS fingerprints are client-side settings. The subscription builder emits a sensible
+        // Reality URI default, but sing-box rejects tls.utls on inbound server configs.
+    }
+
     private static JsonObject? BuildTransport(JsonObject s, string scope)
     {
         var type = Str(s, scope + "TransportType");
@@ -378,6 +431,26 @@ public static class SingboxConfigBuilder
         }
 
         return transport;
+    }
+
+    private static string ResolveInboundType(JsonObject s)
+    {
+        return FirstNonEmpty(Str(s, "inboundType"), "mixed")!;
+    }
+
+    private static string ResolveOutboundType(JsonObject s)
+    {
+        return FirstNonEmpty(Str(s, "outboundType"), "direct")!;
+    }
+
+    private static string ResolveInboundSecurity(JsonObject s)
+    {
+        return FirstNonEmpty(Str(s, "inboundSecurity"), Bool(s, "inboundTlsEnabled") ? "tls" : "none")!;
+    }
+
+    private static bool IsInboundTlsEnabled(JsonObject s)
+    {
+        return ResolveInboundSecurity(s) is "tls" or "reality";
     }
 
     // --- value helpers (mirror the Frontend's trimming / Number() / split semantics) ---
@@ -469,4 +542,33 @@ public static class SingboxConfigBuilder
             return null;
         }
     }
+
+    private static string? FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+
+    private static string GenerateRealityPrivateKey()
+    {
+        var bytes = RandomNumberGenerator.GetBytes(32);
+        ClampPrivateKey(bytes);
+        return Base64Url(bytes);
+    }
+
+    private static string GenerateRealityShortId()
+        => Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant();
+
+    private static string Base64Url(byte[] bytes)
+        => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    private static void ClampPrivateKey(byte[] key)
+    {
+        if (key.Length != 32)
+        {
+            throw new ArgumentException("Reality keys must be 32 bytes.");
+        }
+
+        key[0] &= 248;
+        key[31] &= 127;
+        key[31] |= 64;
+    }
+
 }

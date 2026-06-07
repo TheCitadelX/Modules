@@ -98,7 +98,11 @@
 > `TrustTunnel/TrustTunnel`, binary `trusttunnel_endpoint`, asset prefix `trusttunnel`, and emits a bundled
 > TOML `FileArtifact` containing `vpn.toml`, `hosts.toml`, `credentials.toml`, and `rules.toml`. The node
 > module splits the bundle into files, starts `trusttunnel_endpoint vpn.toml hosts.toml`, captures logs,
-> patches `credentials.toml` for user commands, and reports process runtime state.
+> patches `credentials.toml` for user commands, and reports process runtime state. Guided setup now covers
+> the official endpoint surface used by CitadelX: main TLS hosts, ping/speedtest paths, direct or SOCKS5
+> forwarding, reverse proxy, optional ICMP, Prometheus metrics, and simple CIDR rules plus raw extra
+> `rules.toml` snippets. Keep these settings in `TrustTunnelSimpleSetupSchema` and `TrustTunnelModule`
+> rather than adding TrustTunnel-specific form branches in Frontend.
 
 `Modules/` is the extension layer for CitadelX cores. A core is a runtime such as sing-box or sing-box-extended. Each supported core can have a backend module and a node module.
 
@@ -215,7 +219,7 @@ Core metadata:
 - repo: `CoreRepos:Singbox`
 - node module DLL: `CitadelX.SingboxNodeModule.dll`
 
-Note: `SimpleSetupSchema` now returns `SingboxSimpleSetupSchema.Schema` (schema + UI + defaults). The Frontend renders it generically via `SchemaForm.vue` — there is no sing-box-specific form in Frontend anymore. The module also implements `BuildConfig` (structured → `SingboxConfigBuilder`, raw → passthrough), `BuildSubscriptionLinks`, and typed `BuildSubscription` (`SingboxSubscriptionBuilder`).
+Note: `SimpleSetupSchema` now returns `SingboxSimpleSetupSchema.Schema` (schema + UI + defaults). The Frontend renders it generically via `SchemaForm.vue` — there is no sing-box-specific form in Frontend anymore. The guided setup no longer uses presets that override user choices: `inboundType`, `inboundSecurity`, and transport are independent inputs. The default guided path is intentionally compact: `VLESS + Reality`, listen `0.0.0.0:443`, direct outbound, and advanced socket/outbound/routing/transport sections hidden behind `advancedMode`. `Security=None` must produce a config without `tls`/`reality`. `SingboxConfigBuilder` generates Reality server `private_key` and `short_id` when omitted, keeps client-only Reality `public_key` and inbound `utls` out of the server config, and avoids creating partial VLESS/VMess/Trojan users without required credentials. `SingboxSubscriptionBuilder` derives the VLESS subscription `pbk` from the persisted private key and emits a client URI fingerprint default. The module also implements `BuildConfig` (structured → `SingboxConfigBuilder`, raw → passthrough), `BuildSubscriptionLinks`, and typed `BuildSubscription` (`SingboxSubscriptionBuilder`).
 
 ### SingboxExtendedModule
 

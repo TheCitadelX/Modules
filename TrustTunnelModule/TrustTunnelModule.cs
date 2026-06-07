@@ -77,6 +77,29 @@ public sealed class TrustTunnelModule : ICoreModule
         var ipv6Available = GetBool(values, "ipv6Available", true);
         var allowPrivate = GetBool(values, "allowPrivateNetworkConnections", false);
         var skipVerification = GetBool(values, "skipVerification", false);
+        var pingEnable = GetBool(values, "pingEnable", false);
+        var pingPath = GetString(values, "pingPath", "/ping");
+        var speedtestEnable = GetBool(values, "speedtestEnable", false);
+        var speedtestPath = GetString(values, "speedtestPath", "/speedtest");
+        var authFailureStatusCode = GetInt(values, "authFailureStatusCode", 407);
+        var forwardProtocol = GetString(values, "forwardProtocol", "direct");
+        var socks5Address = GetString(values, "socks5Address", "127.0.0.1:1080");
+        var socks5ExtendedAuth = GetBool(values, "socks5ExtendedAuth", false);
+        var reverseProxyEnabled = GetBool(values, "reverseProxyEnabled", false);
+        var reverseProxyServerAddress = GetString(values, "reverseProxyServerAddress", "127.0.0.1:8080");
+        var reverseProxyPathMask = GetString(values, "reverseProxyPathMask", "/api");
+        var reverseProxyHostname = GetString(values, "reverseProxyHostname", string.Empty);
+        var reverseProxyH3BackwardCompatibility = GetBool(values, "reverseProxyH3BackwardCompatibility", false);
+        var icmpEnabled = GetBool(values, "icmpEnabled", false);
+        var icmpInterfaceName = GetString(values, "icmpInterfaceName", "eth0");
+        var icmpRequestTimeoutSecs = GetInt(values, "icmpRequestTimeoutSecs", 3);
+        var icmpRecvQueueCapacity = GetInt(values, "icmpRecvQueueCapacity", 256);
+        var metricsEnabled = GetBool(values, "metricsEnabled", false);
+        var metricsAddress = GetString(values, "metricsAddress", "127.0.0.1:1987");
+        var metricsRequestTimeoutSecs = GetInt(values, "metricsRequestTimeoutSecs", 3);
+        var denyCidrs = SplitMultiline(values, "denyCidrs");
+        var allowCidrs = SplitMultiline(values, "allowCidrs");
+        var rulesToml = GetString(values, "rulesToml", string.Empty);
 
         var vpn = $"""
         # CitadelX-LogLevel: {logLevel}
@@ -86,6 +109,7 @@ public sealed class TrustTunnelModule : ICoreModule
         listen_address = "{Toml(listenAddress)}"
         ipv6_available = {Bool(ipv6Available)}
         allow_private_network_connections = {Bool(allowPrivate)}
+        auth_failure_status_code = {NormalizeAuthFailureStatusCode(authFailureStatusCode)}
         tls_handshake_timeout_secs = 10
         client_listener_timeout_secs = 600
         connection_establishment_timeout_secs = 30
@@ -93,6 +117,10 @@ public sealed class TrustTunnelModule : ICoreModule
         udp_connections_timeout_secs = 300
         credentials_file = "credentials.toml"
         rules_file = "rules.toml"
+        ping_enable = {Bool(pingEnable)}
+        ping_path = "{Toml(pingPath)}"
+        speedtest_enable = {Bool(speedtestEnable)}
+        speedtest_path = "{Toml(speedtestPath)}"
 
         [listen_protocols]
 
@@ -122,22 +150,25 @@ public sealed class TrustTunnelModule : ICoreModule
         message_queue_capacity = 4096
 
         [forward_protocol]
-        [forward_protocol.direct]
+        {BuildForwardProtocol(forwardProtocol, socks5Address, socks5ExtendedAuth)}
+        {BuildIcmpSection(icmpEnabled, icmpInterfaceName, icmpRequestTimeoutSecs, icmpRecvQueueCapacity)}
+        {BuildMetricsSection(metricsEnabled, metricsAddress, metricsRequestTimeoutSecs)}
+        {BuildReverseProxySection(reverseProxyEnabled, reverseProxyServerAddress, reverseProxyPathMask, reverseProxyH3BackwardCompatibility)}
         """;
 
-        var hosts = $"""
-        [[main_hosts]]
-        hostname = "{Toml(hostname)}"
-        cert_chain_path = "{Toml(certChainPath)}"
-        private_key_path = "{Toml(privateKeyPath)}"
-        """;
+        var hosts = BuildHostsToml(
+            hostname,
+            certChainPath,
+            privateKeyPath,
+            reverseProxyEnabled ? reverseProxyHostname : string.Empty);
+        var rules = BuildRulesToml(denyCidrs, allowCidrs, rulesToml);
 
         var bundle = BuildBundle(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["vpn.toml"] = vpn,
             ["hosts.toml"] = hosts,
             ["credentials.toml"] = BuildEmptyCredentialsFile(),
-            ["rules.toml"] = "# Empty rules: if no rules match, TrustTunnel allows the connection by default.\n"
+            ["rules.toml"] = rules
         });
 
         return new FileArtifact
@@ -414,6 +445,162 @@ public sealed class TrustTunnelModule : ICoreModule
            && node.GetValueKind() is JsonValueKind.True or JsonValueKind.False
             ? node.GetValue<bool>()
             : fallback;
+
+    private static int GetInt(JsonObject obj, string key, int fallback)
+    {
+        if (!obj.TryGetPropertyValue(key, out var node) || node is null)
+        {
+            return fallback;
+        }
+
+        if (node.GetValueKind() == JsonValueKind.Number)
+        {
+            try
+            {
+                return node.GetValue<int>();
+            }
+            catch
+            {
+                return fallback;
+            }
+        }
+
+        return node.GetValueKind() switch
+        {
+            JsonValueKind.String when int.TryParse(node.GetValue<string>(), out var value) => value,
+            _ => fallback
+        };
+    }
+
+    private static int NormalizeAuthFailureStatusCode(int value)
+        => value is 403 or 404 or 405 or 407 ? value : 407;
+
+    private static IReadOnlyList<string> SplitMultiline(JsonObject obj, string key)
+    {
+        var raw = GetString(obj, key, string.Empty);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return Array.Empty<string>();
+        }
+
+        return raw
+            .Split(new[] { '\n', ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string BuildForwardProtocol(string protocol, string socks5Address, bool socks5ExtendedAuth)
+    {
+        if (string.Equals(protocol, "socks5", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"""
+            [forward_protocol.socks5]
+            address = "{Toml(socks5Address)}"
+            extended_auth = {Bool(socks5ExtendedAuth)}
+            """;
+        }
+
+        return """
+        direct = {}
+        """;
+    }
+
+    private static string BuildIcmpSection(bool enabled, string interfaceName, int requestTimeoutSecs, int recvQueueCapacity)
+    {
+        if (!enabled)
+        {
+            return string.Empty;
+        }
+
+        return $"""
+        [icmp]
+        interface_name = "{Toml(interfaceName)}"
+        request_timeout_secs = {Math.Max(1, requestTimeoutSecs)}
+        recv_message_queue_capacity = {Math.Max(1, recvQueueCapacity)}
+        """;
+    }
+
+    private static string BuildMetricsSection(bool enabled, string address, int requestTimeoutSecs)
+    {
+        if (!enabled)
+        {
+            return string.Empty;
+        }
+
+        return $"""
+        [metrics]
+        address = "{Toml(address)}"
+        request_timeout_secs = {Math.Max(1, requestTimeoutSecs)}
+        """;
+    }
+
+    private static string BuildReverseProxySection(bool enabled, string serverAddress, string pathMask, bool h3BackwardCompatibility)
+    {
+        if (!enabled)
+        {
+            return string.Empty;
+        }
+
+        return $"""
+        [reverse_proxy]
+        server_address = "{Toml(serverAddress)}"
+        path_mask = "{Toml(pathMask)}"
+        h3_backward_compatibility = {Bool(h3BackwardCompatibility)}
+        """;
+    }
+
+    private static string BuildHostsToml(string hostname, string certChainPath, string privateKeyPath, string reverseProxyHostname)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("[[main_hosts]]");
+        builder.Append("hostname = \"").Append(Toml(hostname)).AppendLine("\"");
+        builder.Append("cert_chain_path = \"").Append(Toml(certChainPath)).AppendLine("\"");
+        builder.Append("private_key_path = \"").Append(Toml(privateKeyPath)).AppendLine("\"");
+
+        if (!string.IsNullOrWhiteSpace(reverseProxyHostname))
+        {
+            builder.AppendLine();
+            builder.AppendLine("[[reverse_proxy_hosts]]");
+            builder.Append("hostname = \"").Append(Toml(reverseProxyHostname)).AppendLine("\"");
+            builder.Append("cert_chain_path = \"").Append(Toml(certChainPath)).AppendLine("\"");
+            builder.Append("private_key_path = \"").Append(Toml(privateKeyPath)).AppendLine("\"");
+        }
+
+        return builder.ToString();
+    }
+
+    private static string BuildRulesToml(IReadOnlyList<string> denyCidrs, IReadOnlyList<string> allowCidrs, string extraRulesToml)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("# CitadelX-managed TrustTunnel rules.");
+        builder.AppendLine("# If no rule matches, TrustTunnel allows the connection by default.");
+
+        foreach (var cidr in denyCidrs)
+        {
+            builder.AppendLine();
+            builder.AppendLine("[[rule]]");
+            builder.AppendLine("action = \"deny\"");
+            builder.Append("cidr = \"").Append(Toml(cidr)).AppendLine("\"");
+        }
+
+        foreach (var cidr in allowCidrs)
+        {
+            builder.AppendLine();
+            builder.AppendLine("[[rule]]");
+            builder.AppendLine("action = \"allow\"");
+            builder.Append("cidr = \"").Append(Toml(cidr)).AppendLine("\"");
+        }
+
+        if (!string.IsNullOrWhiteSpace(extraRulesToml))
+        {
+            builder.AppendLine();
+            builder.AppendLine("# Extra rules from Simple setup.");
+            builder.AppendLine(Normalize(extraRulesToml).TrimEnd());
+        }
+
+        return builder.ToString();
+    }
 
     private static string GeneratePassword()
     {

@@ -34,6 +34,9 @@ public interface INodeServer : IServer, IManagedServer
     Task<ServerLogChunk> ReadLogsAsync(ServerLogQuery query)
         => Task.FromResult(new ServerLogChunk());
 
+    Task ClearLogsAsync()
+        => Task.CompletedTask;
+
     ServerRuntimeState GetRuntimeState()
         => new()
         {
