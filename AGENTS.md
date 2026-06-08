@@ -24,6 +24,7 @@ The stable bridge between the halves is `CoreId` plus aliases.
 - `WireGuardModule/` / `WireGuardNodeModule/` - Linux `wg-quick` WireGuard backend/node plugin pair.
 - `AmneziaWGModule/` / `AmneziaWGNodeModule/` - Linux `awg-quick` AmneziaWG backend/node plugin pair.
 - `TrustTunnelModule/` / `TrustTunnelNodeModule/` - AdGuard TrustTunnel endpoint backend/node plugin pair.
+- `DnsTTModule/` / `DnsTTNodeModule/` - official `dnstt-server` TCP-over-DNS backend/node plugin pair.
 - `tools/build-modules.ps1` - builds and packages module DLLs.
 
 ## Coding Rules
@@ -45,6 +46,7 @@ The stable bridge between the halves is `CoreId` plus aliases.
 - `WireGuard`
 - `AmneziaWG`
 - `TrustTunnel`
+- `DnsTT`
 
 ## Build Commands
 
@@ -63,6 +65,8 @@ dotnet build .\Modules\AmneziaWGModule\CitadelX.AmneziaWGModule.csproj
 dotnet build .\Modules\AmneziaWGNodeModule\AmneziaWGNodeModule.csproj
 dotnet build .\Modules\TrustTunnelModule\CitadelX.TrustTunnelModule.csproj
 dotnet build .\Modules\TrustTunnelNodeModule\TrustTunnelNodeModule.csproj
+dotnet build .\Modules\DnsTTModule\CitadelX.DnsTTModule.csproj
+dotnet build .\Modules\DnsTTNodeModule\DnsTTNodeModule.csproj
 ```
 
 Packaging:
@@ -107,6 +111,7 @@ npm run build
 - WireGuard defaults are meant to work on a clean Linux node: artifact filename `wg0.conf` is authoritative, server-side config omits `DNS`, client DNS is carried as `# CitadelX-ClientDNS`, and default `PostUp`/`PostDown` enable IPv4 forwarding plus NAT for `10.77.0.0/24`.
 - AmneziaWG is a separate core id, not a WireGuard mode. It controls `awg`/`awg-quick`, stores configs under `data/amneziawg`, emits `wg://` URIs with `enable_amnezia=true`, and returns full `.conf` subscription files that include Amnezia interface keys. Guided setup has a `protocolVersion` gate: `1.0` emits `Jc/Jmin/Jmax`, `S1/S2`, `H1-H4`; `1.5` also emits `I1-I5`; `2.0` also emits `S3/S4` and supports header ranges. Its `SystemPackageInstall` declares apt/dnf pre-install repository steps plus package-manager-specific package names.
 - TrustTunnel is a process core around the official `trusttunnel_endpoint vpn.toml hosts.toml` runtime. The backend module bundles `vpn.toml`, `hosts.toml`, `credentials.toml`, and `rules.toml`; the node module materializes the bundle, validates TLS file readability, starts the process, and patches `credentials.toml` on user commands. Guided setup is schema-driven and includes TLS hosts, ping/speedtest paths, direct/SOCKS5 forwarding, reverse proxy, optional ICMP, metrics, and simple CIDR rules. Keep field names aligned with upstream `CONFIGURATION.md` (`metrics.address`, `icmp.recv_message_queue_capacity`, `rule.cidr`, top-level `ping_enable`/`speedtest_enable`).
+- DnsTT is a process core around official `dnstt-server`. It is a TCP-over-DNS tunnel, not a TUN VPN. Default guided setup uses `forwardMode=socks5Sidecar`: Node starts a small local sing-box process with `mixed`/`socks` inbound and points `dnstt-server` at that local proxy. Raw TCP forwarding remains available through `forwardMode=rawTcp`. Backend emits a simple key/value `FileArtifact`; Node materializes it under `data/dnstt`, runs `dnstt-server -gen-key` when keys are absent, starts `dnstt-server -udp <listen> -privkey-file <key> <domain> <effectiveTarget>`, and reports only the generated public key back to Backend. Server-scoped subscriptions return full/file client instructions; there is no official URI link format.
 - `CoreInstaller` is generic (D4): the binary name, package names, and pre-install repository steps come from module `Install` metadata, not hardcoded core names.
 - `SingboxConfigPatcher` chooses user key based on inbound type: `username` for `mixed`/`socks`/`http`, otherwise `name`.
 - Disabling sing-box users removes them from config and stores their previous JSON in `DisabledUserStore`.

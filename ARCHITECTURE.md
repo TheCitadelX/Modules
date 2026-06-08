@@ -31,7 +31,7 @@
 > or explicit `Unavailable` snapshots rather than fake degraded status.
 >
 > **Pure-plugin loading (D2/D3) — no compile-time coupling.** Backend/Node `.csproj` and `Program.cs` have
-> **no** ProjectReference or hardcoded DI for modules. Each of the 4 module projects has an MSBuild target
+> **no** ProjectReference or hardcoded DI for modules. Each concrete module project has an MSBuild target
 > `CopyToDropFolder` (`AfterTargets="Build"`) copying **only its own DLL** (`$(TargetPath)`) into the
 > repo-root `Drop/modules/`. Shared contract DLLs are **not** copied (the plugin resolver returns null for
 > them → type identity unifies against the host's already-loaded copy → casts succeed).
@@ -103,6 +103,19 @@
 > forwarding, reverse proxy, optional ICMP, Prometheus metrics, and simple CIDR rules plus raw extra
 > `rules.toml` snippets. Keep these settings in `TrustTunnelSimpleSetupSchema` and `TrustTunnelModule`
 > rather than adding TrustTunnel-specific form branches in Frontend.
+>
+> **DnsTT exists as a Process core.** `DnsTTModule` and `DnsTTNodeModule` are plugin projects for the
+> official `dnstt-server` TCP-over-DNS tunnel runtime. DnsTT is not a TUN VPN and has no user-specific peer
+> state. Default guided setup uses `forwardMode=socks5Sidecar`: the node module writes a small sing-box
+> config, starts a local `mixed`/`socks` proxy sidecar, and points `dnstt-server` at that local listener so
+> the user gets a practical SOCKS5/HTTP proxy without creating a second panel server. `forwardMode=rawTcp`
+> still forwards DNS-tunneled TCP to one configured target. The backend module exposes tunnel domain, UDP
+> listen address, forward mode, sidecar settings, DNS resolver mode, delegation notes, and optional key file
+> overrides. It emits a key/value `FileArtifact`; the node module materializes it under `data/dnstt`,
+> generates `server.key`/`server.pub` through `dnstt-server -gen-key`, starts `dnstt-server -udp <listen>
+> -privkey-file <key> <domain> <effectiveTarget>`, captures DnsTT and sidecar logs, and reports the generated
+> public key back to Backend through the optional node apply-report hook. Subscriptions are server-scoped
+> full/file client instructions because DnsTT has no official URI format.
 
 `Modules/` is the extension layer for CitadelX cores. A core is a runtime such as sing-box or sing-box-extended. Each supported core can have a backend module and a node module.
 
@@ -111,14 +124,14 @@
 ```mermaid
 flowchart LR
     Backend["Backend"] --> BackendContract["ICoreModule\nbackend abstraction"]
-    BackendContract --> BackendModule["SingboxModule\nSingboxExtendedModule\nWireGuardModule\nAmneziaWGModule\nTrustTunnelModule"]
+    BackendContract --> BackendModule["SingboxModule\nSingboxExtendedModule\nWireGuardModule\nAmneziaWGModule\nTrustTunnelModule\nDnsTTModule"]
     BackendModule --> Catalog["/api/cores/catalog\n/releases\n/install"]
     Catalog --> Frontend["Frontend"]
 
     Backend --> Commands["NodeCommandEntity\ncoreId in payload"]
     Commands --> Node["Node"]
     Node --> NodeContract["INodeCoreModule\nnode abstraction"]
-    NodeContract --> NodeModule["SingboxNodeModule\nSingboxExtendedNodeModule\nWireGuardNodeModule\nAmneziaWGNodeModule\nTrustTunnelNodeModule"]
+    NodeContract --> NodeModule["SingboxNodeModule\nSingboxExtendedNodeModule\nWireGuardNodeModule\nAmneziaWGNodeModule\nTrustTunnelNodeModule\nDnsTTNodeModule"]
     NodeModule --> Runtime["INodeServer"]
     Runtime --> Process["core process"]
 ```
@@ -179,6 +192,8 @@ Contracts:
 - `IServer` - start/stop/restart and `Apply(ConfigArtifact)` (the old `Reconfigure(string)` was removed).
 - `IManagedServer` - user lifecycle operations.
 - `INodeServer` - combines process and user operations and accepts launch profiles.
+- `INodeApplyReportProvider` - optional hook for returning non-secret apply results, such as a generated
+  server public key, in the `server.reconfigure` ACK.
 - `INodeCoreModule` - factory for `INodeServer`.
 
 Models:
@@ -279,6 +294,43 @@ Core metadata:
 AmneziaWG is intentionally not exposed as a WireGuard mode. It is a separate core id so catalog, availability,
 install status, server profiles, and subscriptions can diverge from kernel WireGuard cleanly.
 
+### TrustTunnelModule
+
+Path:
+
+```text
+Modules/TrustTunnelModule/
+```
+
+Core metadata:
+
+- `Id`: `TrustTunnel`
+- aliases: `trusttunnel`, `tt`, `adguard-vpn`
+- runtime: `Process`
+- install: `GitHubReleaseInstall`, binary `trusttunnel_endpoint`
+- config: bundled TOML `FileArtifact` (`vpn.toml`, `hosts.toml`, `credentials.toml`, `rules.toml`)
+- subscriptions: combined `tt://?` deeplink plus full/downloadable client TOML
+
+### DnsTTModule
+
+Path:
+
+```text
+Modules/DnsTTModule/
+```
+
+Core metadata:
+
+- `Id`: `DnsTT`
+- aliases: `dnstt`, `dns-tunnel`, `dns-over-dns`
+- runtime: `Process`
+- install: `SystemPackageInstall` for Linux build dependencies plus an official-source build step for `dnstt-server`/`dnstt-client`
+- config: key/value `FileArtifact` consumed by the node module; default `forwardMode=socks5Sidecar`, optional `forwardMode=rawTcp`
+- subscriptions: full/downloadable client instructions; no official URI-list format exists
+
+Dnstt requires DNS delegation outside the process itself: the tunnel domain must delegate NS to a host whose
+A/AAAA record points at the node running `dnstt-server`.
+
 ## Current Node Modules
 
 ### SingboxNodeModule
@@ -372,6 +424,34 @@ Modules/AmneziaWGNodeModule/
 `# CitadelX-UserId` convention. It uses the same node-local `wireguard-private-key` generator for server
 private/public keys because AmneziaWG uses WireGuard-compatible X25519 keys.
 
+### TrustTunnelNodeModule
+
+Path:
+
+```text
+Modules/TrustTunnelNodeModule/
+```
+
+`TrustTunnelNodeModule` materializes the backend TOML bundle into a config directory, validates referenced TLS
+files, starts `trusttunnel_endpoint vpn.toml hosts.toml`, captures logs, and patches `credentials.toml` for user
+attachments.
+
+### DnsTTNodeModule
+
+Path:
+
+```text
+Modules/DnsTTNodeModule/
+```
+
+`DnsTTNodeModule` materializes the key/value `FileArtifact` under `data/dnstt`, generates `server.key` and
+`server.pub` with `dnstt-server -gen-key` when absent, and starts `dnstt-server -udp <listen> -privkey-file
+<key> <domain> <effectiveTarget>`. In `socks5Sidecar` mode it also writes `sidecar.sing-box.json`, resolves a
+`sing-box` binary from an explicit path, `PATH`, or the installed Singbox/SingboxExtended core registry, starts
+that sidecar first, captures both process logs, and marks the server failed if either process exits. User
+operations are access-attachment no-ops. The module returns the generated public key through
+`INodeApplyReportProvider` so Backend can update the stored artifact for subscriptions.
+
 ## Backend + Node Module Binding
 
 The binding is convention plus metadata:
@@ -451,6 +531,7 @@ Modules/tools/SingboxExtended.zip
 Modules/tools/WireGuard.zip
 Modules/tools/AmneziaWG.zip
 Modules/tools/TrustTunnel.zip
+Modules/tools/DnsTT.zip
 ```
 
 Each package includes:

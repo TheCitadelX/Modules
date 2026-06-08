@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CitadelX.DnsTTNodeModule</AssemblyName>
+    <RootNamespace>CitadelX.DnsTTNodeModule</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CitadelX.Node.Abstractions\CitadelX.Node.Abstractions.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+  </ItemGroup>
+
+  <Target Name="CopyToDropFolder" AfterTargets="Build">
+    <PropertyGroup>
+      <DropModulesDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\Drop\modules'))</DropModulesDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(DropModulesDir)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(DropModulesDir)" />
+  </Target>
+</Project>

@@ -51,6 +51,13 @@ $modules = @(
         BackendDll = "CitadelX.TrustTunnelModule.dll"
         NodeProject = "TrustTunnelNodeModule\TrustTunnelNodeModule.csproj"
         NodeDll = "CitadelX.TrustTunnelNodeModule.dll"
+    },
+    @{
+        Name = "DnsTT"
+        BackendProject = "DnsTTModule\CitadelX.DnsTTModule.csproj"
+        BackendDll = "CitadelX.DnsTTModule.dll"
+        NodeProject = "DnsTTNodeModule\DnsTTNodeModule.csproj"
+        NodeDll = "CitadelX.DnsTTNodeModule.dll"
     }
 )
 

@@ -48,6 +48,15 @@ public interface INodeServer : IServer, IManagedServer
         => Array.Empty<ServerUserRuntimeSnapshot>();
 }
 
+/// <summary>
+/// Optional runtime hook for process modules that need to return non-secret apply results
+/// to the backend after a successful <c>server.reconfigure</c>.
+/// </summary>
+public interface INodeApplyReportProvider
+{
+    System.Text.Json.Nodes.JsonObject? GetLastApplyReport();
+}
+
 public interface INodeCoreModule
 {
     string CoreId { get; }
