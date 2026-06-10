@@ -3,8 +3,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>CitadelX.DnsTTNodeModule</AssemblyName>
-    <RootNamespace>CitadelX.DnsTTNodeModule</RootNamespace>
+    <AssemblyName>CitadelX.SlipstreamNodeModule</AssemblyName>
+    <RootNamespace>CitadelX.SlipstreamNodeModule</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

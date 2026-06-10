@@ -89,7 +89,7 @@ public sealed class TrustTunnelNodeServer : INodeServer
             throw new InvalidOperationException("TrustTunnel artifact does not contain bundled config files.");
         }
 
-        var baseDir = ResolveConfigDirectory(file.FileName);
+        var baseDir = ResolveManagedConfigDirectory();
         Directory.CreateDirectory(baseDir);
         foreach (var (name, content) in files)
         {
@@ -282,21 +282,11 @@ public sealed class TrustTunnelNodeServer : INodeServer
         return _profile.BinaryPath;
     }
 
-    private string ResolveConfigDirectory(string? artifactFileName = null)
-    {
-        var configured = _profile.ConfigPath;
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            var full = Path.GetFullPath(configured);
-            return Path.HasExtension(full) ? Path.GetDirectoryName(full) ?? full : full;
-        }
+    private string ResolveConfigDirectory()
+        => TrustTunnelConfigPaths.ResolveExistingOrManagedDirectory(_profile, AppContext.BaseDirectory);
 
-        var safeId = string.IsNullOrWhiteSpace(_profile.ServerId)
-            ? "trusttunnel"
-            : string.Concat(_profile.ServerId.Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '_'));
-        var fileName = string.IsNullOrWhiteSpace(artifactFileName) ? safeId : Path.GetFileNameWithoutExtension(artifactFileName);
-        return Path.Combine(AppContext.BaseDirectory, "data", "trusttunnel", string.IsNullOrWhiteSpace(fileName) ? safeId : fileName);
-    }
+    private string ResolveManagedConfigDirectory()
+        => TrustTunnelConfigPaths.ResolveManagedDirectory(_profile, AppContext.BaseDirectory);
 
     private static Dictionary<string, string> ParseBundle(string content)
     {

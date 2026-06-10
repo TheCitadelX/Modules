@@ -3,19 +3,13 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>CitadelX.DnsTTNodeModule</AssemblyName>
-    <RootNamespace>CitadelX.DnsTTNodeModule</RootNamespace>
+    <AssemblyName>CitadelX.SlipstreamModule</AssemblyName>
+    <RootNamespace>CitadelX.SlipstreamModule</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CitadelX.Node.Abstractions\CitadelX.Node.Abstractions.csproj" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>CitadelX.Node.Tests</_Parameter1>
-    </AssemblyAttribute>
+    <ProjectReference Include="..\CitadelX.Backend.Abstractions\CitadelX.Backend.Abstractions.csproj" />
+    <ProjectReference Include="..\CitadelX.Modules.Abstractions\CitadelX.Modules.Abstractions.csproj" />
   </ItemGroup>
 
   <Target Name="CopyToDropFolder" AfterTargets="Build">

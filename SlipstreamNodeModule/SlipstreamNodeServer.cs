@@ -1,18 +1,17 @@
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CitadelX.Modules.Abstractions;
 using CitadelX.Node.Abstractions;
 using Microsoft.Extensions.Logging;
 
-namespace CitadelX.DnsTTNodeModule;
+namespace CitadelX.SlipstreamNodeModule;
 
-public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
+public sealed class SlipstreamNodeServer : INodeServer
 {
     private readonly object _sync = new();
     private readonly AtomicFileWriter _fileWriter;
-    private readonly ILogger<DnsTTNodeServer> _logger;
+    private readonly ILogger<SlipstreamNodeServer> _logger;
     private ServerLaunchProfile _profile;
     private RollingServerLog _log;
     private Process? _process;
@@ -21,9 +20,8 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
     private int? _lastExitCode;
     private int? _lastSidecarExitCode;
     private string? _lastStatusMessage;
-    private JsonObject? _lastApplyReport;
 
-    public DnsTTNodeServer(ServerLaunchProfile profile, AtomicFileWriter fileWriter, ILogger<DnsTTNodeServer> logger)
+    public SlipstreamNodeServer(ServerLaunchProfile profile, AtomicFileWriter fileWriter, ILogger<SlipstreamNodeServer> logger)
     {
         _profile = profile;
         _fileWriter = fileWriter;
@@ -37,8 +35,8 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         {
             lock (_sync)
             {
-                var dnsttRunning = _process is not null && !_process.HasExited;
-                if (!dnsttRunning)
+                var slipstreamRunning = _process is not null && !_process.HasExited;
+                if (!slipstreamRunning)
                 {
                     return false;
                 }
@@ -86,48 +84,27 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         }
     }
 
-    public JsonObject? GetLastApplyReport()
-    {
-        lock (_sync)
-        {
-            return _lastApplyReport is null
-                ? null
-                : JsonNode.Parse(_lastApplyReport.ToJsonString()) as JsonObject;
-        }
-    }
-
     public async Task Apply(ConfigArtifact artifact)
     {
         if (artifact is not FileArtifact file)
         {
-            throw new NotSupportedException($"DnsTT supports file artifacts only; received '{artifact.GetType().Name}'.");
+            throw new NotSupportedException($"Slipstream supports file artifacts only; received '{artifact.GetType().Name}'.");
         }
 
         if (string.IsNullOrWhiteSpace(file.Content))
         {
-            throw new ArgumentException("DnsTT config content is empty.", nameof(artifact));
+            throw new ArgumentException("Slipstream config content is empty.", nameof(artifact));
         }
 
-        var baseDir = DnsTTConfigPaths.ResolveManagedDirectory(_profile, AppContext.BaseDirectory);
+        var baseDir = SlipstreamConfigPaths.ResolveManagedDirectory(_profile, AppContext.BaseDirectory);
         Directory.CreateDirectory(baseDir);
 
-        var configPath = Path.Combine(baseDir, "dnstt.conf");
+        var configPath = Path.Combine(baseDir, "slipstream.conf");
         _fileWriter.WriteAllTextAtomic(configPath, Normalize(file.Content));
-        var settings = DnsTTSettings.Parse(File.ReadAllText(configPath), baseDir);
-        var keyInfo = await EnsureKeysAsync(settings);
 
         lock (_sync)
         {
             _profile.ConfigPath = configPath;
-            _lastApplyReport = new JsonObject
-            {
-                ["dnstt"] = new JsonObject
-                {
-                    ["publicKey"] = keyInfo.PublicKey,
-                    ["privateKeyFile"] = keyInfo.PrivateKeyFile,
-                    ["publicKeyFile"] = keyInfo.PublicKeyFile
-                }
-            };
         }
 
         if (IsRunning)
@@ -146,11 +123,12 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         {
             var configPath = RequireConfigPath();
             var baseDir = Path.GetDirectoryName(configPath) ?? AppContext.BaseDirectory;
-            var settings = DnsTTSettings.Parse(File.ReadAllText(configPath), baseDir);
+            var settings = SlipstreamSettings.Parse(File.ReadAllText(configPath), baseDir);
             ValidateSettings(settings);
-            var dnsttRunning = _process is not null && !_process.HasExited;
+
+            var slipstreamRunning = _process is not null && !_process.HasExited;
             var sidecarRunning = _sidecarProcess is not null && !_sidecarProcess.HasExited;
-            var effectiveRunning = dnsttRunning
+            var effectiveRunning = slipstreamRunning
                                    && _lastSidecarExitCode is null
                                    && (!settings.SidecarEnabled || sidecarRunning);
             if (effectiveRunning)
@@ -158,7 +136,7 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
                 return Task.CompletedTask;
             }
 
-            if (dnsttRunning || sidecarRunning)
+            if (slipstreamRunning || sidecarRunning)
             {
                 StopProcess(_process);
                 StopProcess(_sidecarProcess);
@@ -168,11 +146,6 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
                 _sidecarProcess = null;
             }
 
-            if (!File.Exists(settings.PrivateKeyFile))
-            {
-                throw new FileNotFoundException("DnsTT private key file is missing.", settings.PrivateKeyFile);
-            }
-
             try
             {
                 if (settings.SidecarEnabled)
@@ -180,12 +153,12 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
                     _sidecarProcess = StartSidecar(settings, baseDir);
                 }
 
-                _process = StartDnsTT(settings, baseDir);
+                _process = StartSlipstream(settings, baseDir);
                 _startedAt = DateTimeOffset.UtcNow;
                 _lastExitCode = null;
                 _lastSidecarExitCode = null;
                 _lastStatusMessage = null;
-                _logger.LogInformation("DnsTT server started. Domain={Domain} Target={Target}", settings.Domain, settings.EffectiveTargetAddress);
+                _logger.LogInformation("Slipstream server started. Domain={Domain} Target={Target}", settings.Domain, settings.EffectiveTargetAddress);
             }
             catch
             {
@@ -198,42 +171,67 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         return Task.CompletedTask;
     }
 
-    private Process StartDnsTT(DnsTTSettings settings, string baseDir)
+    private Process StartSlipstream(SlipstreamSettings settings, string baseDir)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(settings.CertPath) ?? baseDir);
+        Directory.CreateDirectory(Path.GetDirectoryName(settings.KeyPath) ?? baseDir);
+        Directory.CreateDirectory(Path.GetDirectoryName(settings.ResetSeedPath) ?? baseDir);
+
         var startInfo = new ProcessStartInfo
-            {
-                FileName = ResolveBinaryPath(),
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = baseDir
-            };
-        startInfo.ArgumentList.Add("-udp");
-        startInfo.ArgumentList.Add(settings.UdpListen);
-        startInfo.ArgumentList.Add("-privkey-file");
-        startInfo.ArgumentList.Add(settings.PrivateKeyFile);
-        startInfo.ArgumentList.Add(settings.Domain);
+        {
+            FileName = ResolveBinaryPath(),
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = baseDir
+        };
+
+        startInfo.ArgumentList.Add("--dns-listen-host");
+        startInfo.ArgumentList.Add(settings.DnsListenHost);
+        startInfo.ArgumentList.Add("--dns-listen-port");
+        startInfo.ArgumentList.Add(settings.DnsListenPort.ToString());
+        startInfo.ArgumentList.Add("--target-address");
         startInfo.ArgumentList.Add(settings.EffectiveTargetAddress);
+        startInfo.ArgumentList.Add("--domain");
+        startInfo.ArgumentList.Add(settings.Domain);
+        startInfo.ArgumentList.Add("--cert");
+        startInfo.ArgumentList.Add(settings.CertPath);
+        startInfo.ArgumentList.Add("--key");
+        startInfo.ArgumentList.Add(settings.KeyPath);
+        startInfo.ArgumentList.Add("--reset-seed");
+        startInfo.ArgumentList.Add(settings.ResetSeedPath);
+        startInfo.ArgumentList.Add("--max-connections");
+        startInfo.ArgumentList.Add(settings.MaxConnections.ToString());
+        startInfo.ArgumentList.Add("--idle-timeout-seconds");
+        startInfo.ArgumentList.Add(settings.IdleTimeoutSeconds.ToString());
+
+        if (!string.IsNullOrWhiteSpace(settings.FallbackUdp))
+        {
+            startInfo.ArgumentList.Add("--fallback");
+            startInfo.ArgumentList.Add(settings.FallbackUdp);
+        }
 
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         process.Exited += OnProcessExited;
         process.OutputDataReceived += (_, e) => _log.Append("stdout", e.Data);
         process.ErrorDataReceived += (_, e) => _log.Append("stderr", e.Data);
 
-        _log.Append("system", $"exec: {startInfo.FileName} -udp {settings.UdpListen} -privkey-file {settings.PrivateKeyFile} {settings.Domain} {settings.EffectiveTargetAddress}");
+        _log.Append("system", $"exec: {startInfo.FileName} --dns-listen-host {settings.DnsListenHost} --dns-listen-port {settings.DnsListenPort} --target-address {settings.EffectiveTargetAddress} --domain {settings.Domain}");
         if (!process.Start())
         {
-            throw new InvalidOperationException("Failed to start dnstt-server process.");
+            throw new InvalidOperationException("Failed to start slipstream-server process.");
         }
 
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
-        _log.Append("system", $"dnstt started pid={process.Id}");
+        _log.Append("system", $"slipstream started pid={process.Id}");
+        TryRestrictKeyPermissions(settings.KeyPath);
+        TryRestrictKeyPermissions(settings.ResetSeedPath);
         return process;
     }
 
-    private Process StartSidecar(DnsTTSettings settings, string baseDir)
+    private Process StartSidecar(SlipstreamSettings settings, string baseDir)
     {
         var binary = ResolveSidecarBinaryPath(settings);
         var configPath = Path.Combine(baseDir, "sidecar.sing-box.json");
@@ -260,7 +258,7 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         _log.Append("system", $"exec sidecar: {binary} run -c {configPath}");
         if (!process.Start())
         {
-            throw new InvalidOperationException("Failed to start DnsTT sing-box sidecar process.");
+            throw new InvalidOperationException("Failed to start Slipstream sing-box sidecar process.");
         }
 
         process.BeginOutputReadLine();
@@ -279,7 +277,7 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
             sidecarProcess = _sidecarProcess;
         }
 
-        await StopProcessAsync(process, "dnstt");
+        await StopProcessAsync(process, "slipstream");
         await StopProcessAsync(sidecarProcess, "sidecar");
 
         lock (_sync)
@@ -335,72 +333,6 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         return Task.CompletedTask;
     }
 
-    private async Task<DnsTTKeyInfo> EnsureKeysAsync(DnsTTSettings settings)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(settings.PrivateKeyFile) ?? AppContext.BaseDirectory);
-        Directory.CreateDirectory(Path.GetDirectoryName(settings.PublicKeyFile) ?? AppContext.BaseDirectory);
-
-        if (!File.Exists(settings.PrivateKeyFile))
-        {
-            var result = await RunAsync(
-                ResolveBinaryPath(),
-                new[] { "-gen-key", "-privkey-file", settings.PrivateKeyFile, "-pubkey-file", settings.PublicKeyFile });
-
-            if (result.ExitCode != 0)
-            {
-                throw new InvalidOperationException($"dnstt-server key generation failed: {result.Summary}");
-            }
-
-            TryRestrictKeyPermissions(settings.PrivateKeyFile);
-        }
-
-        var publicKey = File.Exists(settings.PublicKeyFile)
-            ? File.ReadAllText(settings.PublicKeyFile).Trim()
-            : settings.ServerPublicKey;
-
-        if (string.IsNullOrWhiteSpace(publicKey))
-        {
-            _log.Append("system", "public key file is missing; subscriptions will require manual serverPublicKey.");
-        }
-
-        return new DnsTTKeyInfo(settings.PrivateKeyFile, settings.PublicKeyFile, publicKey);
-    }
-
-    private async Task<CommandResult> RunAsync(string fileName, IReadOnlyList<string> args)
-    {
-        var psi = new ProcessStartInfo
-        {
-            FileName = fileName,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
-
-        foreach (var arg in args)
-        {
-            psi.ArgumentList.Add(arg);
-        }
-
-        _log.Append("system", $"exec: {fileName} {string.Join(' ', args)}");
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start '{fileName}'.");
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
-        if (!string.IsNullOrWhiteSpace(stdout))
-        {
-            _log.Append("stdout", stdout.TrimEnd());
-        }
-
-        if (!string.IsNullOrWhiteSpace(stderr))
-        {
-            _log.Append("stderr", stderr.TrimEnd());
-        }
-
-        return new CommandResult(process.ExitCode, stdout, stderr);
-    }
-
     private string RequireConfigPath()
     {
         var configured = _profile.ConfigPath;
@@ -409,45 +341,36 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
             return configured;
         }
 
-        var managed = DnsTTConfigPaths.ResolveManagedConfigPath(_profile, AppContext.BaseDirectory);
+        var managed = SlipstreamConfigPaths.ResolveManagedConfigPath(_profile, AppContext.BaseDirectory);
         if (File.Exists(managed))
         {
             return managed;
         }
 
-        var legacyDirectory = DnsTTConfigPaths.ResolveExistingOrManagedDirectory(_profile, AppContext.BaseDirectory);
-        var legacy = Path.Combine(legacyDirectory, "dnstt.conf");
+        var legacyDirectory = SlipstreamConfigPaths.ResolveExistingOrManagedDirectory(_profile, AppContext.BaseDirectory);
+        var legacy = Path.Combine(legacyDirectory, "slipstream.conf");
         if (File.Exists(legacy))
         {
             return legacy;
         }
 
-        throw new FileNotFoundException("DnsTT config file is missing.", configured);
+        throw new FileNotFoundException("Slipstream config file is missing.", configured);
     }
 
     private string ResolveBinaryPath()
-        => string.IsNullOrWhiteSpace(_profile.BinaryPath) ? "dnstt-server" : _profile.BinaryPath;
+        => string.IsNullOrWhiteSpace(_profile.BinaryPath) ? "slipstream-server" : _profile.BinaryPath;
 
-    private string ResolveSidecarBinaryPath(DnsTTSettings settings)
+    private string ResolveSidecarBinaryPath(SlipstreamSettings settings)
     {
         if (!string.IsNullOrWhiteSpace(settings.SidecarBinaryPath))
         {
             return settings.SidecarBinaryPath;
         }
 
-        var pathBinary = ResolveBinaryOnPath("sing-box");
-        if (!string.IsNullOrWhiteSpace(pathBinary))
-        {
-            return pathBinary;
-        }
-
-        var installed = ResolveInstalledCoreBinary("Singbox") ?? ResolveInstalledCoreBinary("SingboxExtended");
-        if (!string.IsNullOrWhiteSpace(installed))
-        {
-            return installed;
-        }
-
-        return "sing-box";
+        return ResolveBinaryOnPath("sing-box")
+               ?? ResolveInstalledCoreBinary("Singbox")
+               ?? ResolveInstalledCoreBinary("SingboxExtended")
+               ?? "sing-box";
     }
 
     private static string? ResolveBinaryOnPath(string binaryName)
@@ -513,13 +436,13 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         return null;
     }
 
-    private static string BuildSidecarConfig(DnsTTSettings settings)
+    private static string BuildSidecarConfig(SlipstreamSettings settings)
     {
-        var (listenHost, listenPort) = SplitListen(settings.SidecarListen, "127.0.0.1", 10808);
+        var (listenHost, listenPort) = SplitListen(settings.SidecarListen, "127.0.0.1", 10818);
         var inbound = new JsonObject
         {
             ["type"] = settings.SidecarInboundType,
-            ["tag"] = "dnstt-sidecar-in",
+            ["tag"] = "slipstream-sidecar-in",
             ["listen"] = listenHost,
             ["listen_port"] = listenPort
         };
@@ -590,43 +513,26 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         return (string.IsNullOrWhiteSpace(host) ? fallbackHost : host, port);
     }
 
-    private static string? ReadString(JsonObject obj, string key)
-    {
-        if (!obj.TryGetPropertyValue(key, out var node) || node is null)
-        {
-            return null;
-        }
-
-        try
-        {
-            return node.GetValue<string>();
-        }
-        catch
-        {
-            return node.ToString();
-        }
-    }
-
-    private static void ValidateSettings(DnsTTSettings settings)
+    private static void ValidateSettings(SlipstreamSettings settings)
     {
         if (string.IsNullOrWhiteSpace(settings.Domain))
         {
-            throw new InvalidOperationException("DnsTT domain is required.");
+            throw new InvalidOperationException("Slipstream domain is required.");
         }
 
-        if (string.IsNullOrWhiteSpace(settings.UdpListen))
+        if (settings.DnsListenPort <= 0)
         {
-            throw new InvalidOperationException("DnsTT udpListen is required.");
+            throw new InvalidOperationException("Slipstream UDP listen port is required.");
         }
 
-        if (string.IsNullOrWhiteSpace(settings.TargetAddress))
+        if (string.IsNullOrWhiteSpace(settings.EffectiveTargetAddress))
         {
-            throw new InvalidOperationException("DnsTT targetAddress is required.");
+            throw new InvalidOperationException("Slipstream target address is required.");
         }
 
         if (settings.SidecarEnabled && string.IsNullOrWhiteSpace(settings.SidecarListen))
         {
-            throw new InvalidOperationException("DnsTT sidecarListen is required when SOCKS5 sidecar mode is enabled.");
+            throw new InvalidOperationException("Slipstream sidecarListen is required when SOCKS5 sidecar mode is enabled.");
         }
     }
 
@@ -742,7 +648,10 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
 
         try
         {
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            if (File.Exists(path))
+            {
+                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
         }
         catch
         {
@@ -758,7 +667,7 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         }
 
         var safeId = string.IsNullOrWhiteSpace(profile.ServerId)
-            ? "dnstt"
+            ? "slipstream"
             : string.Concat(profile.ServerId.Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '_'));
         return Path.Combine(AppContext.BaseDirectory, "data", "server-logs", $"{safeId}.jsonl");
     }
@@ -775,20 +684,31 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         }
     }
 
+    private static string? ReadString(JsonObject obj, string key)
+    {
+        if (!obj.TryGetPropertyValue(key, out var node) || node is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return node.GetValue<string>();
+        }
+        catch
+        {
+            return node.ToString();
+        }
+    }
+
     private static string Normalize(string content)
         => content.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').TrimEnd() + Environment.NewLine;
 
-    private sealed record DnsTTKeyInfo(string PrivateKeyFile, string PublicKeyFile, string PublicKey);
-
-    private sealed record CommandResult(int ExitCode, string Stdout, string Stderr)
-    {
-        public string Summary => string.Join(" ", new[] { Stderr.Trim(), Stdout.Trim() }.Where(value => !string.IsNullOrWhiteSpace(value)));
-    }
-
-    private sealed class DnsTTSettings
+    private sealed class SlipstreamSettings
     {
         public required string Domain { get; init; }
-        public required string UdpListen { get; init; }
+        public required string DnsListenHost { get; init; }
+        public required int DnsListenPort { get; init; }
         public required string ForwardMode { get; init; }
         public required string TargetAddress { get; init; }
         public required string SidecarListen { get; init; }
@@ -799,34 +719,40 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         public required string SidecarPassword { get; init; }
         public string SidecarBinaryPath { get; init; } = string.Empty;
         public required string SidecarLogLevel { get; init; }
-        public required string PrivateKeyFile { get; init; }
-        public required string PublicKeyFile { get; init; }
-        public string ServerPublicKey { get; init; } = string.Empty;
+        public required string CertPath { get; init; }
+        public required string KeyPath { get; init; }
+        public required string ResetSeedPath { get; init; }
+        public int MaxConnections { get; init; }
+        public int IdleTimeoutSeconds { get; init; }
+        public string FallbackUdp { get; init; } = string.Empty;
         public bool SidecarEnabled => ForwardMode == "socks5Sidecar";
         public string EffectiveTargetAddress => SidecarEnabled ? SidecarListen : TargetAddress;
 
-        public static DnsTTSettings Parse(string content, string baseDir)
+        public static SlipstreamSettings Parse(string content, string baseDir)
         {
             var values = ParseKeyValues(content);
-            var privateKeyFile = ResolvePath(baseDir, Get(values, "serverPrivateKeyFile", "server.key"));
-            var publicKeyFile = ResolvePath(baseDir, Get(values, "serverPublicKeyFile", "server.pub"));
-            return new DnsTTSettings
+            var (listenHost, listenPort) = SplitListen(Get(values, "udpListen", ":53"), "::", 53);
+            return new SlipstreamSettings
             {
-                Domain = Get(values, "domain", "t.example.com"),
-                UdpListen = Get(values, "udpListen", ":5300"),
+                Domain = Get(values, "domain", "slip.example.com"),
+                DnsListenHost = listenHost,
+                DnsListenPort = listenPort,
                 ForwardMode = NormalizeForwardMode(Get(values, "forwardMode", "socks5Sidecar")),
                 TargetAddress = Get(values, "targetAddress", "127.0.0.1:22"),
-                SidecarListen = Get(values, "sidecarListen", "127.0.0.1:10808"),
+                SidecarListen = Get(values, "sidecarListen", "127.0.0.1:10818"),
                 SidecarInboundType = NormalizeSidecarInboundType(Get(values, "sidecarInboundType", "mixed")),
                 SidecarOutbound = NormalizeSidecarOutbound(Get(values, "sidecarOutbound", "direct")),
                 SidecarAuthEnabled = IsTrue(Get(values, "sidecarAuthEnabled", "false")),
-                SidecarUsername = Get(values, "sidecarUsername", "dnstt"),
+                SidecarUsername = Get(values, "sidecarUsername", "slipstream"),
                 SidecarPassword = Get(values, "sidecarPassword", string.Empty),
                 SidecarBinaryPath = Get(values, "sidecarBinaryPath", string.Empty),
                 SidecarLogLevel = NormalizeLogLevel(Get(values, "sidecarLogLevel", "info")),
-                PrivateKeyFile = privateKeyFile,
-                PublicKeyFile = publicKeyFile,
-                ServerPublicKey = Get(values, "serverPublicKey", string.Empty)
+                CertPath = ResolvePath(baseDir, Get(values, "certPath", "cert.pem")),
+                KeyPath = ResolvePath(baseDir, Get(values, "keyPath", "key.pem")),
+                ResetSeedPath = ResolvePath(baseDir, Get(values, "resetSeedPath", "reset-seed")),
+                MaxConnections = GetInt(values, "maxConnections", 256),
+                IdleTimeoutSeconds = GetInt(values, "idleTimeoutSeconds", 60),
+                FallbackUdp = Get(values, "fallbackUdp", string.Empty)
             };
         }
 
@@ -853,6 +779,9 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
 
         private static string Get(IReadOnlyDictionary<string, string> values, string key, string fallback)
             => values.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value) ? value : fallback;
+
+        private static int GetInt(IReadOnlyDictionary<string, string> values, string key, int fallback)
+            => values.TryGetValue(key, out var value) && int.TryParse(value, out var parsed) ? parsed : fallback;
 
         private static string NormalizeForwardMode(string value)
             => value.Equals("rawTcp", StringComparison.OrdinalIgnoreCase) ? "rawTcp" : "socks5Sidecar";
@@ -883,12 +812,9 @@ public sealed class DnsTTNodeServer : INodeServer, INodeApplyReportProvider
         private static string Unquote(string value)
         {
             var trimmed = value.Trim();
-            if (trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[^1] == '"')
-            {
-                return trimmed[1..^1].Replace("\\\"", "\"", StringComparison.Ordinal);
-            }
-
-            return trimmed;
+            return trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[^1] == '"'
+                ? trimmed[1..^1].Replace("\\\"", "\"", StringComparison.Ordinal)
+                : trimmed;
         }
     }
 }

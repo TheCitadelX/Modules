@@ -144,8 +144,8 @@ public sealed class SingboxProcessManager
 
             var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             process.Exited += OnProcessExited;
-            process.OutputDataReceived += (_, eventArgs) => _log?.Append("stdout", eventArgs.Data);
-            process.ErrorDataReceived += (_, eventArgs) => _log?.Append("stderr", eventArgs.Data);
+            process.OutputDataReceived += (_, eventArgs) => AppendProcessLog("stdout", eventArgs.Data);
+            process.ErrorDataReceived += (_, eventArgs) => AppendProcessLog("stderr", eventArgs.Data);
 
             if (!process.Start())
             {
@@ -257,15 +257,30 @@ public sealed class SingboxProcessManager
             return;
         }
 
+        process.WaitForExit();
         lock (_sync)
         {
             var exitCode = TryGetExitCode(process);
-            _lastExitCode = exitCode;
-            _log?.Append("system", exitCode.HasValue ? $"exited code={exitCode.Value}" : "exited");
+            var exitMessage = SingboxLogClassifier.ResolveExitMessage(_shouldBeRunning, exitCode);
+            _lastExitCode = _shouldBeRunning ? exitCode : null;
+            if (exitMessage is not null)
+            {
+                _log?.Append("system", exitMessage);
+            }
             _process?.Dispose();
             _process = null;
             _startedAt = null;
         }
+    }
+
+    private void AppendProcessLog(string physicalStream, string? text)
+    {
+        if (text is null || SingboxLogClassifier.IsBenignShutdownMessage(text))
+        {
+            return;
+        }
+
+        _log?.Append(SingboxLogClassifier.ResolveStream(physicalStream, text), text);
     }
 
     public Task<ServerLogChunk> ReadLogsAsync(ServerLogQuery query)

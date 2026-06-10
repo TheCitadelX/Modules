@@ -33,15 +33,15 @@ public sealed class DnsTTModule : ICoreModule
         BinaryName = "dnstt-server",
         PackageNames = new Dictionary<OsKind, string>
         {
-            [OsKind.Linux] = "golang-go"
+            [OsKind.Linux] = "git"
         },
         PackageNamesByManager = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
         {
-            ["apt-get"] = new[] { "golang-go", "git", "ca-certificates" },
-            ["dnf"] = new[] { "golang", "git", "ca-certificates" },
-            ["yum"] = new[] { "golang", "git", "ca-certificates" },
-            ["pacman"] = new[] { "go", "git", "ca-certificates" },
-            ["zypper"] = new[] { "go", "git", "ca-certificates" }
+            ["apt-get"] = new[] { "git", "ca-certificates", "curl", "tar" },
+            ["dnf"] = new[] { "git", "ca-certificates", "curl", "tar" },
+            ["yum"] = new[] { "git", "ca-certificates", "curl", "tar" },
+            ["pacman"] = new[] { "git", "ca-certificates", "curl", "tar" },
+            ["zypper"] = new[] { "git", "ca-certificates", "curl", "tar" }
         },
         PostInstallValidationSteps = new[]
         {
@@ -50,15 +50,56 @@ public sealed class DnsTTModule : ICoreModule
                 Description = "Build and install DnsTT from official source",
                 Shell = """
                 set -e
+                export HOME="${HOME:-/root}"
+                tools_dir="${CITADELX_TOOLS_DIR:-/opt/citadelx/tools}"
+                export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$tools_dir/cache}"
+                export GOCACHE="${GOCACHE:-$tools_dir/go-cache/build}"
+                export GOPATH="${GOPATH:-$tools_dir/go-cache/path}"
+                mkdir -p "$GOCACHE" "$GOPATH"
                 if ! command -v dnstt-server >/dev/null 2>&1 || ! command -v dnstt-client >/dev/null 2>&1; then
                   tmp="$(mktemp -d)"
                   trap 'rm -rf "$tmp"' EXIT
-                  git clone --depth 1 https://www.bamsoftware.com/git/dnstt.git "$tmp/dnstt"
+
+                  go_cmd=""
+                  if command -v go >/dev/null 2>&1; then
+                    go_version_text="$(go version 2>/dev/null || true)"
+                    go_major="$(printf '%s' "$go_version_text" | sed -n 's/.* go\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1/p')"
+                    go_minor="$(printf '%s' "$go_version_text" | sed -n 's/.* go\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\2/p')"
+                    if [ -n "$go_major" ] && [ -n "$go_minor" ]; then
+                      if [ "$go_major" -gt 1 ] || { [ "$go_major" -eq 1 ] && [ "$go_minor" -ge 20 ]; }; then
+                        go_cmd="$(command -v go)"
+                      fi
+                    fi
+                  fi
+
+                  if [ -z "$go_cmd" ]; then
+                    go_version="${CITADELX_GO_VERSION:-1.26.4}"
+                    case "$(uname -m)" in
+                      x86_64|amd64) go_arch="amd64" ;;
+                      aarch64|arm64) go_arch="arm64" ;;
+                      i386|i686) go_arch="386" ;;
+                      armv6l|armv7l) go_arch="armv6l" ;;
+                      *) echo "Unsupported Go architecture: $(uname -m)" >&2; exit 1 ;;
+                    esac
+
+                    go_root="$tools_dir/go-$go_version"
+                    if [ ! -x "$go_root/bin/go" ]; then
+                      rm -rf "$go_root.tmp"
+                      mkdir -p "$go_root.tmp"
+                      curl -fsSL "https://go.dev/dl/go${go_version}.linux-${go_arch}.tar.gz" -o "$tmp/go.tgz"
+                      tar -xzf "$tmp/go.tgz" -C "$go_root.tmp" --strip-components=1
+                      rm -rf "$go_root"
+                      mv "$go_root.tmp" "$go_root"
+                    fi
+                    go_cmd="$go_root/bin/go"
+                  fi
+
+                  git clone https://www.bamsoftware.com/git/dnstt.git "$tmp/dnstt"
                   cd "$tmp/dnstt"
-                  go build ./dnstt-server
-                  go build ./dnstt-client
-                  install -m 0755 dnstt-server /usr/local/bin/dnstt-server
-                  install -m 0755 dnstt-client /usr/local/bin/dnstt-client
+                  "$go_cmd" build -o "$tmp/dnstt-server-bin" ./dnstt-server
+                  "$go_cmd" build -o "$tmp/dnstt-client-bin" ./dnstt-client
+                  install -m 0755 "$tmp/dnstt-server-bin" /usr/local/bin/dnstt-server
+                  install -m 0755 "$tmp/dnstt-client-bin" /usr/local/bin/dnstt-client
                 fi
                 command -v dnstt-server >/dev/null
                 command -v dnstt-client >/dev/null
@@ -128,10 +169,12 @@ public sealed class DnsTTModule : ICoreModule
         var nameServerHost = Get(values, "nameServerHost", string.Empty);
         var nameServerAddress = Get(values, "nameServerAddress", string.Empty);
 
-        var args = BuildClientArgs(clientMode, resolver, dohUrl, publicKey, domain, localListen);
+        var clientName = string.IsNullOrWhiteSpace(request.Label) ? request.UserId : request.Label;
+        var args = BuildClientArgs(clientMode, resolver, dohUrl, publicKey, domain, localListen, clientName);
+        var deeplink = BuildDnsttUri(domain, publicKey, clientMode, resolver, dohUrl, clientName);
         var file = $"""
         # CitadelX DnsTT client profile
-        # DnsTT tunnels TCP through DNS. Start this local client, then connect your TCP client to {localListen}.
+        # DnsTT tunnels TCP through DNS. Start this local client, then point your application to {localListen}.
         #
         # Server forwards incoming tunnel TCP to: {effectiveTarget}
         {BuildSidecarClientNotes(forwardMode, sidecarInboundType, sidecarAuthEnabled, sidecarUsername, sidecarPassword, localListen)}
@@ -139,14 +182,29 @@ public sealed class DnsTTModule : ICoreModule
         #   {domain} NS {Fallback(nameServerHost, "<your-nameserver-host>")}
         #   {Fallback(nameServerHost, "<your-nameserver-host>")} A {Fallback(nameServerAddress, "<your-node-public-ip>")}
         #
-        # Save the public key below as server.pub:
+        # Save the public key below as server.pub in the same directory as this profile:
         {NormalizePublicKeyBlock(publicKey)}
+
+        # CitadelX deeplink:
+        {(string.IsNullOrWhiteSpace(deeplink) ? "# <dnstt:// link will be available after serverPublicKey is filled>" : deeplink)}
 
         # Client command:
         dnstt-client {args}
+
+        # Quick proxy test:
+        #   curl --proxy socks5h://{localListen} https://api.ipify.org
         """;
 
-        return SubscriptionPayload.ConfigFile(
+        if (string.IsNullOrWhiteSpace(deeplink))
+        {
+            return SubscriptionPayload.ConfigFile(
+                $"{Sanitize(request.UserId)}.dnstt.txt",
+                Normalize(file),
+                "text/plain");
+        }
+
+        return SubscriptionPayload.Combined(
+            new[] { deeplink },
             $"{Sanitize(request.UserId)}.dnstt.txt",
             Normalize(file),
             "text/plain");
@@ -200,7 +258,7 @@ public sealed class DnsTTModule : ICoreModule
         return builder.ToString();
     }
 
-    private static string BuildClientArgs(string mode, string resolver, string dohUrl, string publicKey, string domain, string localListen)
+    private static string BuildClientArgs(string mode, string resolver, string dohUrl, string publicKey, string domain, string localListen, string clientName)
     {
         var transport = mode switch
         {
@@ -212,7 +270,27 @@ public sealed class DnsTTModule : ICoreModule
         var keyArg = string.IsNullOrWhiteSpace(publicKey)
             ? "-pubkey-file server.pub"
             : "-pubkey-file server.pub";
-        return $"{transport} {keyArg} {Shell(domain)} {Shell(localListen)}";
+        var nameArg = string.IsNullOrWhiteSpace(clientName) ? string.Empty : $"-n {Shell(clientName)}";
+        return $"{transport} {keyArg} {nameArg} {Shell(domain)} {Shell(localListen)}".Replace("  ", " ", StringComparison.Ordinal).Trim();
+    }
+
+    private static string? BuildDnsttUri(string domain, string publicKey, string mode, string resolver, string dohUrl, string label)
+    {
+        if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(publicKey))
+        {
+            return null;
+        }
+
+        var transport = NormalizeClientMode(mode);
+        var resolverValue = transport == "doh" ? dohUrl : resolver;
+        var query = new[]
+        {
+            $"pubkey={Uri.EscapeDataString(publicKey.Trim())}",
+            $"resolver={Uri.EscapeDataString(resolverValue.Trim())}",
+            $"transport={Uri.EscapeDataString(transport)}"
+        };
+        var fragment = string.IsNullOrWhiteSpace(label) ? string.Empty : $"#{Uri.EscapeDataString(label.Trim())}";
+        return $"dnstt://{Uri.EscapeDataString(domain.Trim())}?{string.Join('&', query)}{fragment}";
     }
 
     private static string BuildSidecarClientNotes(

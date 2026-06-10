@@ -10,6 +10,11 @@
     <ProjectReference Include="..\CitadelX.Node.Abstractions\CitadelX.Node.Abstractions.csproj" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
   </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>CitadelX.Node.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
   <Target Name="CopyToDropFolder" AfterTargets="Build">
     <PropertyGroup>
       <DropFolder>$(MSBuildThisFileDirectory)..\..\Drop\modules</DropFolder>

@@ -1,6 +1,6 @@
 # Modules Architecture
 
-> ## ⚠️ Current State (updated 2026-06-02) — authoritative, read before trusting the body
+> ## ⚠️ Current State (updated 2026-06-10) — authoritative, read before trusting the body
 >
 > The body predates Phase 1 + the Module Decoupling track (D1–D6). Where it conflicts, **this banner wins**.
 > Canonical design: `../MODULE_SYSTEM_SPEC.md`.
@@ -27,8 +27,11 @@
 > `GetUserRuntimeSnapshots()`.
 > Runtime state now includes `ServerRuntimeHealth` and `StatusMessage`. Current sing-box node modules
 > implement logs through capped JSONL stdout/stderr logs and mark failed non-zero process exits.
-> Per-user snapshots are optional; modules that cannot report user telemetry should return an empty list
-> or explicit `Unavailable` snapshots rather than fake degraded status.
+> Both independent sing-box node modules inject a loopback-only V2Ray API into materialized configs,
+> synchronize `stats.users` from every inbound, query the gRPC StatsService, and report per-user rx/tx,
+> inferred last-seen, and online/idle/offline health. User/config mutations restart a running process so
+> the new credentials and stats list take effect. Per-user snapshots remain optional for other modules;
+> modules without telemetry return an empty list or explicit `Unavailable` snapshots.
 >
 > **Pure-plugin loading (D2/D3) — no compile-time coupling.** Backend/Node `.csproj` and `Program.cs` have
 > **no** ProjectReference or hardcoded DI for modules. Each concrete module project has an MSBuild target
@@ -97,7 +100,8 @@
 > plugin projects for AdGuard TrustTunnel Endpoint. The backend module uses `GitHubReleaseInstall` against
 > `TrustTunnel/TrustTunnel`, binary `trusttunnel_endpoint`, asset prefix `trusttunnel`, and emits a bundled
 > TOML `FileArtifact` containing `vpn.toml`, `hosts.toml`, `credentials.toml`, and `rules.toml`. The node
-> module splits the bundle into files, starts `trusttunnel_endpoint vpn.toml hosts.toml`, captures logs,
+> module splits the bundle into node-owned `data/trusttunnel/<serverId>` files, starts
+> `trusttunnel_endpoint vpn.toml hosts.toml`, captures logs,
 > patches `credentials.toml` for user commands, and reports process runtime state. Guided setup now covers
 > the official endpoint surface used by CitadelX: main TLS hosts, ping/speedtest paths, direct or SOCKS5
 > forwarding, reverse proxy, optional ICMP, Prometheus metrics, and simple CIDR rules plus raw extra
@@ -111,11 +115,27 @@
 > the user gets a practical SOCKS5/HTTP proxy without creating a second panel server. `forwardMode=rawTcp`
 > still forwards DNS-tunneled TCP to one configured target. The backend module exposes tunnel domain, UDP
 > listen address, forward mode, sidecar settings, DNS resolver mode, delegation notes, and optional key file
-> overrides. It emits a key/value `FileArtifact`; the node module materializes it under `data/dnstt`,
+> overrides. Public DNS delegation must land on UDP 53 because NS records cannot carry custom ports. It emits
+> a key/value `FileArtifact`; the node module materializes it under `data/dnstt/<serverId>`,
 > generates `server.key`/`server.pub` through `dnstt-server -gen-key`, starts `dnstt-server -udp <listen>
 > -privkey-file <key> <domain> <effectiveTarget>`, captures DnsTT and sidecar logs, and reports the generated
 > public key back to Backend through the optional node apply-report hook. Subscriptions are server-scoped
-> full/file client instructions because DnsTT has no official URI format.
+> combined payloads once the public key is known: URI/base64 output includes
+> `dnstt://<domain>?pubkey=...&resolver=...&transport=...#label`, while full/file output remains a
+> human-readable client profile.
+>
+> **Slipstream exists as a Process core.** `SlipstreamModule` and `SlipstreamNodeModule` are plugin projects
+> for `Mygod/slipstream-rust`, a QUIC-over-DNS tunnel. The backend module declares a generic
+> `SystemPackageInstall` that bootstraps Rust/cargo when needed and builds `slipstream-client` /
+> `slipstream-server` from upstream source until CitadelX has its own release-build repositories. Guided
+> setup mirrors DnsTT's UX: tunnel domain, UDP listen, DNS delegation validation, recursive and authoritative
+> client resolvers, optional congestion/keepalive settings, and default `forwardMode=socks5Sidecar`. The node
+> module writes key/value artifacts under `data/slipstream/<serverId>`, starts a node-local sing-box sidecar
+> for SOCKS5/HTTP forwarding when selected, then starts `slipstream-server --dns-listen-host <host>
+> --dns-listen-port <port> --target-address <effectiveTarget> --domain <domain> --cert <cert.pem>
+> --key <key.pem> --reset-seed <reset-seed>`. Missing cert/key/reset-seed files are owned by the node; the
+> upstream server can auto-create cert/key, and reset-seed is stored for restart stability. Subscriptions are
+> server-scoped full/file client instructions because there is no stable URI format yet.
 
 `Modules/` is the extension layer for CitadelX cores. A core is a runtime such as sing-box or sing-box-extended. Each supported core can have a backend module and a node module.
 
@@ -124,14 +144,14 @@
 ```mermaid
 flowchart LR
     Backend["Backend"] --> BackendContract["ICoreModule\nbackend abstraction"]
-    BackendContract --> BackendModule["SingboxModule\nSingboxExtendedModule\nWireGuardModule\nAmneziaWGModule\nTrustTunnelModule\nDnsTTModule"]
+    BackendContract --> BackendModule["SingboxModule\nSingboxExtendedModule\nWireGuardModule\nAmneziaWGModule\nTrustTunnelModule\nDnsTTModule\nSlipstreamModule"]
     BackendModule --> Catalog["/api/cores/catalog\n/releases\n/install"]
     Catalog --> Frontend["Frontend"]
 
     Backend --> Commands["NodeCommandEntity\ncoreId in payload"]
     Commands --> Node["Node"]
     Node --> NodeContract["INodeCoreModule\nnode abstraction"]
-    NodeContract --> NodeModule["SingboxNodeModule\nSingboxExtendedNodeModule\nWireGuardNodeModule\nAmneziaWGNodeModule\nTrustTunnelNodeModule\nDnsTTNodeModule"]
+    NodeContract --> NodeModule["SingboxNodeModule\nSingboxExtendedNodeModule\nWireGuardNodeModule\nAmneziaWGNodeModule\nTrustTunnelNodeModule\nDnsTTNodeModule\nSlipstreamNodeModule"]
     NodeModule --> Runtime["INodeServer"]
     Runtime --> Process["core process"]
 ```
@@ -324,12 +344,14 @@ Core metadata:
 - `Id`: `DnsTT`
 - aliases: `dnstt`, `dns-tunnel`, `dns-over-dns`
 - runtime: `Process`
-- install: `SystemPackageInstall` for Linux build dependencies plus an official-source build step for `dnstt-server`/`dnstt-client`
+- install: `SystemPackageInstall` for Linux build dependencies plus an official-source build step for `dnstt-server`/`dnstt-client`; if distro Go is older than 1.20, the step bootstraps a pinned official Go toolchain under `/opt/citadelx/tools`
 - config: key/value `FileArtifact` consumed by the node module; default `forwardMode=socks5Sidecar`, optional `forwardMode=rawTcp`
-- subscriptions: full/downloadable client instructions; no official URI-list format exists
+- subscriptions: combined payloads with `dnstt://...` links for URI/base64 clients plus full/downloadable
+  client instructions for manual setup
 
 Dnstt requires DNS delegation outside the process itself: the tunnel domain must delegate NS to a host whose
-A/AAAA record points at the node running `dnstt-server`.
+A/AAAA record points at the node running `dnstt-server`. For public recursive resolvers, `dnstt-server` must
+listen on UDP 53 or there must be a node-side NAT/firewall rule forwarding UDP 53 to the configured listen port.
 
 ## Current Node Modules
 
@@ -432,9 +454,11 @@ Path:
 Modules/TrustTunnelNodeModule/
 ```
 
-`TrustTunnelNodeModule` materializes the backend TOML bundle into a config directory, validates referenced TLS
-files, starts `trusttunnel_endpoint vpn.toml hosts.toml`, captures logs, and patches `credentials.toml` for user
-attachments.
+`TrustTunnelNodeModule` materializes the backend TOML bundle under node-owned
+`data/trusttunnel/<serverId>`, validates referenced TLS files, starts
+`trusttunnel_endpoint vpn.toml hosts.toml`, captures logs, and patches `credentials.toml` for user attachments.
+New artifacts never use the legacy Backend `ConfigPath` as their destination. For migration compatibility, a
+complete legacy directory can still be read until the next successful apply moves the server to node-local state.
 
 ### DnsTTNodeModule
 
@@ -444,7 +468,7 @@ Path:
 Modules/DnsTTNodeModule/
 ```
 
-`DnsTTNodeModule` materializes the key/value `FileArtifact` under `data/dnstt`, generates `server.key` and
+`DnsTTNodeModule` materializes the key/value `FileArtifact` under `data/dnstt/<serverId>`, generates `server.key` and
 `server.pub` with `dnstt-server -gen-key` when absent, and starts `dnstt-server -udp <listen> -privkey-file
 <key> <domain> <effectiveTarget>`. In `socks5Sidecar` mode it also writes `sidecar.sing-box.json`, resolves a
 `sing-box` binary from an explicit path, `PATH`, or the installed Singbox/SingboxExtended core registry, starts

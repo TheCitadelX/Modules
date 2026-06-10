@@ -12,15 +12,19 @@ public sealed class SingboxNodeServer : INodeServer
     private readonly AtomicFileWriter _fileWriter;
     private readonly DisabledUserStore _disabledUserStore;
     private readonly ILogger<SingboxNodeServer> _logger;
+    private readonly SingboxTelemetryCollector _telemetry;
+    private ServerLaunchProfile _profile;
 
     public SingboxNodeServer(ServerLaunchProfile profile, AtomicFileWriter fileWriter, ILogger<SingboxNodeServer> logger)
     {
+        _profile = profile;
         _fileWriter = fileWriter;
         _logger = logger;
         _processManager = new SingboxProcessManager();
         _processManager.ApplyProfile(profile);
         _patcher = new SingboxConfigPatcher();
         _disabledUserStore = new DisabledUserStore(() => _processManager.ConfigPath, _fileWriter);
+        _telemetry = new SingboxTelemetryCollector(profile.ServerId);
     }
 
     public bool IsRunning => _processManager.IsRunning;
@@ -42,12 +46,15 @@ public sealed class SingboxNodeServer : INodeServer
 
     public void ApplyProfile(ServerLaunchProfile profile)
     {
+        _profile = profile;
         _processManager.ApplyProfile(profile);
+        _telemetry.SetServerId(profile.ServerId);
     }
 
-    public Task Start()
+    public async Task Start()
     {
-        return _processManager.Start();
+        EnsureTelemetryConfiguration();
+        await _processManager.Start();
     }
 
     public Task Stop()
@@ -55,9 +62,15 @@ public sealed class SingboxNodeServer : INodeServer
         return _processManager.Stop();
     }
 
-    public Task Restart()
+    public async Task Restart()
     {
-        return _processManager.Restart();
+        EnsureTelemetryConfiguration();
+        await _processManager.Restart();
+    }
+
+    public IReadOnlyList<ServerUserRuntimeSnapshot> GetUserRuntimeSnapshots()
+    {
+        return _telemetry.Collect(_processManager.IsRunning);
     }
 
     public async Task Apply(ConfigArtifact artifact)
@@ -79,8 +92,10 @@ public sealed class SingboxNodeServer : INodeServer
         }
 
         var targetPath = GetConfigPath();
-        var normalized = _patcher.Normalize(file.Content);
-        _fileWriter.WriteAllTextAtomic(targetPath, normalized);
+        var root = _patcher.LoadJson(file.Content);
+        var telemetryConfiguration = ConfigureTelemetry(root, reuseExistingListenAddress: false);
+        _fileWriter.WriteAllTextAtomic(targetPath, _patcher.Serialize(root));
+        _telemetry.UpdateConfiguration(telemetryConfiguration);
         _processManager.SetConfigPath(targetPath);
         if (!_processManager.IsRunning)
         {
@@ -89,35 +104,33 @@ public sealed class SingboxNodeServer : INodeServer
             return;
         }
 
-        _logger.LogInformation("Sing-box config applied. Path={ConfigPath}", targetPath);
+        await _processManager.Restart();
+        _logger.LogInformation("Sing-box config applied and process restarted. Path={ConfigPath}", targetPath);
     }
 
-    public Task AddUser(UserEntity user, JsonObject? userTemplate = null)
+    public async Task AddUser(UserEntity user, JsonObject? userTemplate = null)
     {
-        PatchConfig(root => _patcher.AddUser(root, user, null, null, userTemplate));
+        await PatchConfig(root => _patcher.AddUser(root, user, null, null, userTemplate));
         _disabledUserStore.Remove(user.Id);
         _logger.LogInformation("User {UserId} added.", user.Id);
-        return Task.CompletedTask;
     }
 
-    public Task EditUser(UserEntity user, JsonObject? userTemplate = null)
+    public async Task EditUser(UserEntity user, JsonObject? userTemplate = null)
     {
-        PatchConfig(root => _patcher.EditUser(root, user, null, null, userTemplate));
+        await PatchConfig(root => _patcher.EditUser(root, user, null, null, userTemplate));
         _logger.LogInformation("User {UserId} edited.", user.Id);
-        return Task.CompletedTask;
     }
 
-    public Task RemoveUser(string userId)
+    public async Task RemoveUser(string userId)
     {
-        PatchConfig(root => _patcher.RemoveUser(root, userId, null, null));
+        await PatchConfig(root => _patcher.RemoveUser(root, userId, null, null));
         _disabledUserStore.Remove(userId);
         _logger.LogInformation("User {UserId} removed.", userId);
-        return Task.CompletedTask;
     }
 
-    public Task DisableUser(string userId)
+    public async Task DisableUser(string userId)
     {
-        PatchConfig(root =>
+        await PatchConfig(root =>
         {
             var removed = _patcher.RemoveUser(root, userId, null, null);
             if (removed is not null)
@@ -127,10 +140,9 @@ public sealed class SingboxNodeServer : INodeServer
         });
 
         _logger.LogInformation("User {UserId} disabled.", userId);
-        return Task.CompletedTask;
     }
 
-    public Task EnableUser(string userId)
+    public async Task EnableUser(string userId)
     {
         var stored = _disabledUserStore.TryTake(userId);
         if (stored is null)
@@ -138,19 +150,18 @@ public sealed class SingboxNodeServer : INodeServer
             throw new InvalidOperationException($"User '{userId}' is not in the disabled store.");
         }
 
-        PatchConfig(root => _patcher.AddUser(root, new UserEntity { Id = userId }, null, null, stored));
+        await PatchConfig(root => _patcher.AddUser(root, new UserEntity { Id = userId }, null, null, stored));
         _logger.LogInformation("User {UserId} enabled.", userId);
-        return Task.CompletedTask;
     }
 
-    public Task SyncUsers(IReadOnlyCollection<string> allowedUserIds)
+    public async Task SyncUsers(IReadOnlyCollection<string> allowedUserIds)
     {
         var configPath = GetConfigPath();
         var root = _patcher.LoadJson(configPath);
         var removedIds = _patcher.RemoveUsersNotIn(root, allowedUserIds, null, null);
         if (removedIds.Count == 0)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         foreach (var removedId in removedIds)
@@ -158,23 +169,60 @@ public sealed class SingboxNodeServer : INodeServer
             _disabledUserStore.Remove(removedId);
         }
 
-        var serialized = _patcher.Serialize(root);
-        _fileWriter.WriteAllTextAtomic(configPath, serialized);
+        var telemetryConfiguration = ConfigureTelemetry(root);
+        _fileWriter.WriteAllTextAtomic(configPath, _patcher.Serialize(root));
+        _telemetry.UpdateConfiguration(telemetryConfiguration);
+        if (_processManager.IsRunning)
+        {
+            await _processManager.Restart();
+        }
         if (removedIds.Count > 0)
         {
             _logger.LogInformation("User sync removed {Count} user(s).", removedIds.Count);
         }
-
-        return Task.CompletedTask;
     }
 
-    private void PatchConfig(Action<JsonNode> patch)
+    private async Task PatchConfig(Action<JsonNode> patch)
     {
         var configPath = GetConfigPath();
         var root = _patcher.LoadJson(configPath);
         patch(root);
-        var serialized = _patcher.Serialize(root);
-        _fileWriter.WriteAllTextAtomic(configPath, serialized);
+        var telemetryConfiguration = ConfigureTelemetry(root);
+        _fileWriter.WriteAllTextAtomic(configPath, _patcher.Serialize(root));
+        _telemetry.UpdateConfiguration(telemetryConfiguration);
+        if (_processManager.IsRunning)
+        {
+            await _processManager.Restart();
+        }
+    }
+
+    private void EnsureTelemetryConfiguration()
+    {
+        var configPath = GetConfigPath();
+        var root = _patcher.LoadJson(configPath);
+        var telemetryConfiguration = ConfigureTelemetry(root);
+        if (telemetryConfiguration.Changed)
+        {
+            _fileWriter.WriteAllTextAtomic(configPath, _patcher.Serialize(root));
+        }
+
+        _telemetry.UpdateConfiguration(telemetryConfiguration);
+    }
+
+    private SingboxV2RayApiConfiguration ConfigureTelemetry(
+        JsonNode root,
+        bool reuseExistingListenAddress = true)
+    {
+        if (string.IsNullOrWhiteSpace(_profile.ServerId))
+        {
+            throw new InvalidOperationException("ServerId is required to configure sing-box telemetry.");
+        }
+
+        return SingboxV2RayApiConfigurator.Configure(
+            root,
+            _profile.ServerId,
+            _telemetry.ListenAddress,
+            reuseExistingListenAddress);
     }
 
     private string GetConfigPath()

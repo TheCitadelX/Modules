@@ -58,6 +58,13 @@ $modules = @(
         BackendDll = "CitadelX.DnsTTModule.dll"
         NodeProject = "DnsTTNodeModule\DnsTTNodeModule.csproj"
         NodeDll = "CitadelX.DnsTTNodeModule.dll"
+    },
+    @{
+        Name = "Slipstream"
+        BackendProject = "SlipstreamModule\CitadelX.SlipstreamModule.csproj"
+        BackendDll = "CitadelX.SlipstreamModule.dll"
+        NodeProject = "SlipstreamNodeModule\SlipstreamNodeModule.csproj"
+        NodeDll = "CitadelX.SlipstreamNodeModule.dll"
     }
 )
 

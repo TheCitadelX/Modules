@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CitadelX.Modules.Abstractions;
 
 namespace CitadelX.Node.Abstractions;
@@ -8,6 +9,9 @@ public sealed class RollingServerLog
     private const int DefaultLimit = 200;
     private const int MaxLimit = 2_000;
     private const long DefaultMaxBytes = 1_048_576;
+    private static readonly Regex TerminalEscapeSequence = new(
+        @"(?:\x1B\][^\x07]*(?:\x07|\x1B\\))|(?:\x1B\[[0-?]*[ -/]*[@-~])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly object _sync = new();
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
@@ -53,7 +57,7 @@ public sealed class RollingServerLog
                     Offset = _nextOffset++,
                     Timestamp = DateTimeOffset.UtcNow,
                     Stream = NormalizeStream(stream),
-                    Text = line
+                    Text = StripTerminalFormatting(line)
                 };
                 writer.WriteLine(JsonSerializer.Serialize(entry, _jsonOptions));
             }
@@ -108,6 +112,14 @@ public sealed class RollingServerLog
             {
                 continue;
             }
+
+            line = new ServerLogLine
+            {
+                Offset = line.Offset,
+                Timestamp = line.Timestamp,
+                Stream = NormalizeSemanticStream(line.Stream, line.Text),
+                Text = StripTerminalFormatting(line.Text)
+            };
 
             if (query.Since.HasValue && line.Offset <= query.Since.Value)
             {
@@ -212,4 +224,23 @@ public sealed class RollingServerLog
             _ => "all"
         };
     }
+
+    private static string NormalizeSemanticStream(string stream, string? text)
+    {
+        if (!string.Equals(stream, "stderr", StringComparison.OrdinalIgnoreCase))
+        {
+            return NormalizeStream(stream);
+        }
+
+        var cleanText = StripTerminalFormatting(text).TrimStart();
+        return cleanText.StartsWith("TRACE", StringComparison.OrdinalIgnoreCase)
+               || cleanText.StartsWith("DEBUG", StringComparison.OrdinalIgnoreCase)
+               || cleanText.StartsWith("INFO", StringComparison.OrdinalIgnoreCase)
+               || cleanText.StartsWith("WARN", StringComparison.OrdinalIgnoreCase)
+            ? "stdout"
+            : "stderr";
+    }
+
+    public static string StripTerminalFormatting(string? text)
+        => string.IsNullOrEmpty(text) ? string.Empty : TerminalEscapeSequence.Replace(text, string.Empty);
 }
